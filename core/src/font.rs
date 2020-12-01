@@ -279,8 +279,26 @@ impl<'gc> Font<'gc> {
                 }
             },
         );
-
+        
         size
+    }
+    
+    fn split_text(text: &str) -> Vec<&str> {
+        let mut vec = Vec::<&str>::new();
+        
+        let mut prev_i = 0;
+        let mut chars = text.char_indices();
+        let mut nx = chars.next();
+        
+        while nx != None {
+			let (i, _) = nx.unwrap();
+            vec.push(&text[prev_i..i]);
+            prev_i = i;
+            nx = chars.next();
+        }
+        
+        
+        return vec;
     }
 
     /// Given a line of text, find the first breakpoint within the text.
@@ -314,7 +332,7 @@ impl<'gc> Font<'gc> {
 
         let mut line_end = 0;
 
-        for word in text.split(' ') {
+        for word in Font::split_text(text) {
             let word_start = word.as_ptr() as usize - text.as_ptr() as usize;
             let word_end = word_start + word.len();
 
