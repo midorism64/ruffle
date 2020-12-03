@@ -719,7 +719,10 @@ impl<'gc> LayoutBox<'gc> {
 
                             // This ensures that the space causing the line break
                             // is included in the line it broke.
-                            let next_breakpoint = min(last_breakpoint + breakpoint, text.len());
+                            let breakpoint_index = last_breakpoint + breakpoint;
+                            let is_white_space = text.as_bytes()[breakpoint_index] == 0x20;
+                            let next_breakpoint = 
+                                min(breakpoint_index + if is_white_space { 1 } else { 0 }, text.len());
 
                             layout_context.append_text(
                                 &text[last_breakpoint..next_breakpoint],

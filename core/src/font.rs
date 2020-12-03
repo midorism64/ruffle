@@ -282,21 +282,47 @@ impl<'gc> Font<'gc> {
         
         size
     }
+
+    /// CJK文字のうちハングルを除く文字については単語間にスペースが入らないため、
+    /// 一文字単位で分割する。
+    ///
+    /// TODO: 各言語の細かいルールに対応する
+    fn is_cjk_target_splitting(ch: char) -> bool {
+        return (0x2E80 <= ch as u32 && ch as u32 <= 0x312F) ||
+               (0x3190 <= ch as u32 && ch as u32 <= 0x9FFF);
+    }
     
+    /// 文字を改行可能位置で分割する。
+    ///
+    /// TODO: CJK以外の言語に対応する
+    /// TODO: テストケースの追加
     fn split_text(text: &str) -> Vec<&str> {
         let mut vec = Vec::<&str>::new();
         
-        let mut prev_i = 0;
-        let mut chars = text.char_indices();
-        let mut nx = chars.next();
+        let str_split_by_space = text.split(' ');
         
-        while nx != None {
-			let (i, _) = nx.unwrap();
-            vec.push(&text[prev_i..i]);
-            prev_i = i;
-            nx = chars.next();
+        for word in str_split_by_space {
+            let mut start_index = 0;
+            let mut prev_index = 0;
+            let mut char_indices = text.char_indices();
+            let mut next = char_indices.next();
+            
+            while next != None {
+                let (i, ch) = next.unwrap();
+                
+                if Font::is_cjk_target_splitting(ch) {
+                    if prev_index == start_index {
+                        vec.push(&word[start_index..i]);
+                    } else {
+                        vec.push(&word[start_index..prev_index]);
+                        vec.push(&word[prev_index..i]);
+                    }
+                    start_index = i;
+                }
+                prev_index = i;
+                next = char_indices.next();
+            }
         }
-        
         
         return vec;
     }
