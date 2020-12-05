@@ -322,8 +322,12 @@ impl<'gc> Font<'gc> {
                 prev_index = i;
                 next = char_indices.next();
             }
+
+            if start_index < word.len() {
+                vec.push(&word[start_index..word.len()]);
+            }
         }
-        
+
         return vec;
     }
 
