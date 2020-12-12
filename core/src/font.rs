@@ -283,8 +283,9 @@ impl<'gc> Font<'gc> {
         size
     }
 
-    /// CJK文字のうちハングルを除く文字については単語間にスペースが入らないため、
-    /// 一文字単位で分割する。
+    /// For CJK characters except Hangul, there is no interword spaces,
+    /// so they are split into single characters.
+    /// This is a temporary fix.
     ///
     /// TODO: 各言語の細かいルールに対応する
     fn is_cjk_target_splitting(ch: char) -> bool {
@@ -323,9 +324,7 @@ impl<'gc> Font<'gc> {
                 next = char_indices.next();
             }
 
-            if start_index < word.len() {
-                vec.push(&word[start_index..word.len()]);
-            }
+            vec.push(word);
         }
 
         return vec;

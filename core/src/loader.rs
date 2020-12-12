@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, Weak};
 use thiserror::Error;
 use url::form_urlencoded;
 
+pub static DEVICE_FONT_TAG: &[u8] = include_bytes!("../assets/noto-sans-definefont3.bin");
 pub type Handle = Index;
 
 #[derive(Error, Debug)]
@@ -541,6 +542,22 @@ impl<'gc> Loader<'gc> {
                         {
                             *load_complete = true;
                         };
+                        let mut reader = swf::read::Reader::new(DEVICE_FONT_TAG, 8);
+                        let device_swf_font = &reader.read_define_font_2(3);
+
+                        match device_swf_font {
+                            Ok(n) => {
+                                let device_font =
+                                    crate::font::Font::from_swf_tag(uc.gc_context, uc.renderer, n);
+                                    {
+                                    match device_font {
+                                        Ok(o) => uc.library.library_for_movie_mut(movie.clone()).set_device_font(Some(o)),
+                                        Err(err) => println!("{}", "Error")
+                                    }
+                                }
+                            },
+                            Err(err) => println!("{}", "Error")
+                        }
 
                         Ok(())
                     })
