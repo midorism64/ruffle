@@ -1,7 +1,7 @@
 # Ruffle 日本語対応デモ
 
 ## これはなに
-Ruffle(https://github.com/ruffle-rs/ruffle)の日本語関連の不具合を直してみたものです。  
+[Ruffle](https://github.com/ruffle-rs/ruffle) の日本語関連の不具合を直してみたものです。  
   
 ## FAQ
  - Q.本家にPR投げないの
