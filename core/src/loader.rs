@@ -552,11 +552,11 @@ impl<'gc> Loader<'gc> {
                                     {
                                     match device_font {
                                         Ok(o) => uc.library.library_for_movie_mut(movie.clone()).set_device_font(Some(o)),
-                                        Err(err) => println!("{}", "Error")
+                                        Err(err) => println!("{}", err)
                                     }
                                 }
                             },
-                            Err(err) => println!("{}", "Error")
+                            Err(err) => println!("{}", err)
                         }
 
                         Ok(())
