@@ -12,6 +12,7 @@ use std::f64;
 mod array;
 pub(crate) mod as_broadcaster;
 mod bevel_filter;
+mod bitmap_data;
 mod bitmap_filter;
 mod blur_filter;
 pub(crate) mod boolean;
@@ -215,6 +216,64 @@ pub fn get_nan<'gc>(
     }
 }
 
+pub fn parse_float<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let s = if let Some(val) = args.get(0) {
+        val.coerce_to_string(activation)?
+    } else {
+        return Ok(f64::NAN.into());
+    };
+
+    let s = s.trim_start().bytes();
+    let mut out_str = String::with_capacity(s.len());
+
+    // TODO: Implementing this in a very janky way for now,
+    // feeding the string to Rust's float parser.
+    // Flash's parser is much more lenient, so we have to massage
+    // the string into an acceptable format.
+    let mut allow_dot = true;
+    let mut allow_exp = true;
+    let mut allow_sign = true;
+    for c in s {
+        match c {
+            b'0'..=b'9' => {
+                allow_sign = false;
+                out_str.push(c.into());
+            }
+            b'+' | b'-' if allow_sign => {
+                // Sign allowed at first char and following e
+                allow_sign = false;
+                out_str.push(c.into());
+            }
+            b'.' if allow_exp => {
+                // Flash allows multiple . except after e
+                allow_sign = false;
+                if allow_dot {
+                    allow_dot = false;
+                    out_str.push(c.into());
+                } else {
+                    allow_exp = false;
+                }
+            }
+            b'e' | b'E' if allow_exp => {
+                allow_sign = true;
+                allow_exp = false;
+                allow_dot = false;
+                out_str.push(c.into());
+            }
+
+            // Invalid char, `parseFloat` ignores all trailing garbage.
+            _ => break,
+        };
+    }
+
+    let n = out_str.parse::<f64>().unwrap_or(f64::NAN);
+    Ok(n.into())
+}
+
 pub fn set_interval<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
 
@@ -346,6 +405,8 @@ pub struct SystemPrototypes<'gc> {
     pub bevel_filter: Object<'gc>,
     pub bevel_filter_constructor: Object<'gc>,
     pub date: Object<'gc>,
+    pub bitmap_data: Object<'gc>,
+    pub bitmap_data_constructor: Object<'gc>,
 }
 
 /// Initialize default global scope and builtins for an AVM1 instance.
@@ -506,6 +567,7 @@ pub fn create_globals<'gc>(
 
     let geom = ScriptObject::object(gc_context, Some(object_proto));
     let filters = ScriptObject::object(gc_context, Some(object_proto));
+    let display = ScriptObject::object(gc_context, Some(object_proto));
 
     let matrix = matrix::create_matrix_object(gc_context, matrix_proto, Some(function_proto));
     let point = point::create_point_object(gc_context, point_proto, Some(function_proto));
@@ -526,6 +588,7 @@ pub fn create_globals<'gc>(
 
     flash.define_value(gc_context, "geom", geom.into(), EnumSet::empty());
     flash.define_value(gc_context, "filters", filters.into(), EnumSet::empty());
+    flash.define_value(gc_context, "display", display.into(), EnumSet::empty());
     geom.define_value(gc_context, "Matrix", matrix.into(), EnumSet::empty());
     geom.define_value(gc_context, "Point", point.into(), EnumSet::empty());
     geom.define_value(gc_context, "Rectangle", rectangle.into(), EnumSet::empty());
@@ -580,6 +643,17 @@ pub fn create_globals<'gc>(
         gc_context,
         "BevelFilter",
         bevel_filter.into(),
+        EnumSet::empty(),
+    );
+
+    let bitmap_data_proto = bitmap_data::create_proto(gc_context, object_proto, function_proto);
+    let bitmap_data =
+        bitmap_data::create_bitmap_data_object(gc_context, bitmap_data_proto, Some(function_proto));
+
+    display.define_value(
+        gc_context,
+        "BitmapData",
+        bitmap_data.into(),
         EnumSet::empty(),
     );
 
@@ -766,6 +840,13 @@ pub fn create_globals<'gc>(
         DontEnum,
         Some(function_proto),
     );
+    globals.force_set_function(
+        "parseFloat",
+        parse_float,
+        gc_context,
+        DontEnum,
+        Some(function_proto),
+    );
     globals.force_set_function("random", random, gc_context, DontEnum, Some(function_proto));
     globals.force_set_function(
         "ASSetPropFlags",
@@ -867,6 +948,8 @@ pub fn create_globals<'gc>(
             bevel_filter: bevel_filter_proto,
             bevel_filter_constructor: bevel_filter,
             date: date_proto,
+            bitmap_data: bitmap_data_proto,
+            bitmap_data_constructor: bitmap_data,
         },
         globals.into(),
         broadcaster_functions,

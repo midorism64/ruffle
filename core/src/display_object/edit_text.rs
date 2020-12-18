@@ -10,6 +10,7 @@ use crate::font::{round_down_to_pixel, Glyph};
 use crate::html::{BoxBounds, FormatSpans, LayoutBox, LayoutContent, TextFormat};
 use crate::prelude::*;
 use crate::shape_utils::DrawCommand;
+use crate::string_utils;
 use crate::tag_utils::SwfMovie;
 use crate::transform::Transform;
 use crate::types::{Degrees, Percent};
@@ -85,8 +86,14 @@ pub struct EditTextData<'gc> {
     /// If the text is word-wrapped.
     is_word_wrap: bool,
 
+    /// The color of the background fill. Only applied when has_border.
+    background_color: u32,
+
     /// If the text field should have a border.
     has_border: bool,
+
+    /// The color of the border.
+    border_color: u32,
 
     /// If the text field is required to use device fonts only.
     is_device_font: bool,
@@ -174,7 +181,9 @@ impl<'gc> EditText<'gc> {
             swf_tag.is_device_font,
         );
 
+        let background_color = 0xFFFFFF; // Default is white
         let has_border = swf_tag.has_border;
+        let border_color = 0; // Default is black
         let is_device_font = swf_tag.is_device_font;
 
         let mut base = DisplayObjectBase::default();
@@ -205,7 +214,9 @@ impl<'gc> EditText<'gc> {
                 is_selectable,
                 is_editable,
                 is_word_wrap,
+                background_color,
                 has_border,
+                border_color,
                 is_device_font,
                 is_html,
                 drawing: Drawing::new(),
@@ -392,6 +403,7 @@ impl<'gc> EditText<'gc> {
     }
 
     pub fn text_format(self, from: usize, to: usize) -> TextFormat {
+        // TODO: Convert to byte indices
         self.0.read().text_spans.get_text_format(from, to)
     }
 
@@ -402,6 +414,7 @@ impl<'gc> EditText<'gc> {
         tf: TextFormat,
         context: &mut UpdateContext<'_, 'gc, '_>,
     ) {
+        // TODO: Convert to byte indices
         self.0
             .write(context.gc_context)
             .text_spans
@@ -452,12 +465,30 @@ impl<'gc> EditText<'gc> {
         self.relayout(context);
     }
 
+    pub fn background_color(self) -> u32 {
+        self.0.read().background_color
+    }
+
+    pub fn set_background_color(self, context: MutationContext<'gc, '_>, background_color: u32) {
+        self.0.write(context).background_color = background_color;
+        self.redraw_border(context);
+    }
+
     pub fn has_border(self) -> bool {
         self.0.read().has_border
     }
 
     pub fn set_has_border(self, context: MutationContext<'gc, '_>, has_border: bool) {
         self.0.write(context).has_border = has_border;
+        self.redraw_border(context);
+    }
+
+    pub fn border_color(self) -> u32 {
+        self.0.read().border_color
+    }
+
+    pub fn set_border_color(self, context: MutationContext<'gc, '_>, border_color: u32) {
+        self.0.write(context).border_color = border_color;
         self.redraw_border(context);
     }
 
@@ -587,19 +618,19 @@ impl<'gc> EditText<'gc> {
 
         if write.has_border {
             let bounds = write.bounds.clone();
+            let border_color = write.border_color;
+            let background_color = write.background_color;
 
             write.drawing.set_line_style(Some(swf::LineStyle::new_v1(
                 Twips::new(1),
-                swf::Color::from_rgb(0, 0xFF),
+                swf::Color::from_rgb(border_color, 0xFF),
             )));
             write
                 .drawing
-                .set_fill_style(Some(swf::FillStyle::Color(Color {
-                    r: 255,
-                    g: 255,
-                    b: 255,
-                    a: 255,
-                })));
+                .set_fill_style(Some(swf::FillStyle::Color(swf::Color::from_rgb(
+                    background_color,
+                    0xFF,
+                ))));
             write.drawing.draw_command(DrawCommand::MoveTo {
                 x: Twips::new(0),
                 y: Twips::new(0),
@@ -993,7 +1024,7 @@ impl<'gc> EditText<'gc> {
                             && local_position.1 <= params.height()
                         {
                             if local_position.0 >= x + (advance / 2) {
-                                result = Some(pos + 1);
+                                result = Some(string_utils::next_char_boundary(text, pos));
                             } else {
                                 result = Some(pos);
                             }
@@ -1030,9 +1061,11 @@ impl<'gc> EditText<'gc> {
                     // Backspace with caret
                     if selection.start() > 0 {
                         // Delete previous character
-                        self.replace_text(selection.start() - 1, selection.start(), "", context);
+                        let text = self.text();
+                        let start = string_utils::prev_char_boundary(&text, selection.start());
+                        self.replace_text(start, selection.start(), "", context);
                         self.set_selection(
-                            Some(TextSelection::for_position(selection.start() - 1)),
+                            Some(TextSelection::for_position(start)),
                             context.gc_context,
                         );
                         changed = true;
@@ -1042,22 +1075,23 @@ impl<'gc> EditText<'gc> {
                     // Delete with caret
                     if selection.end() < self.text_length() {
                         // Delete next character
-                        self.replace_text(selection.start(), selection.start() + 1, "", context);
+                        let text = self.text();
+                        let end = string_utils::next_char_boundary(&text, selection.start());
+                        self.replace_text(selection.start(), end, "", context);
                         // No need to change selection
                         changed = true;
                     }
                 }
-                32..=126 => {
-                    // ASCII
-                    // TODO: Make this actually good and not basic ASCII :)
+                code if !(code as char).is_control() => {
                     self.replace_text(
                         selection.start(),
                         selection.end(),
                         &character.to_string(),
                         context,
                     );
+                    let new_start = selection.start() + character.len_utf8();
                     self.set_selection(
-                        Some(TextSelection::for_position(selection.start() + 1)),
+                        Some(TextSelection::for_position(new_start)),
                         context.gc_context,
                     );
                     changed = true;
@@ -1400,31 +1434,28 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
                 ClipEventResult::Handled
             }
             ClipEvent::KeyPress { key_code } => {
-                let mut text = self.0.write(context.gc_context);
-                let selection = text.selection;
+                let mut edit_text = self.0.write(context.gc_context);
+                let selection = edit_text.selection;
                 if let Some(mut selection) = selection {
-                    let length = text.text_spans.text().len();
+                    let text = edit_text.text_spans.text();
+                    let length = text.len();
                     match key_code {
                         ButtonKeyCode::Left if selection.to > 0 => {
-                            if context.input.is_key_down(KeyCode::Shift) {
-                                selection.to -= 1;
-                            } else {
-                                selection.to -= 1;
+                            selection.to = string_utils::prev_char_boundary(text, selection.to);
+                            if !context.input.is_key_down(KeyCode::Shift) {
                                 selection.from = selection.to;
                             }
                         }
                         ButtonKeyCode::Right if selection.to < length => {
-                            if context.input.is_key_down(KeyCode::Shift) {
-                                selection.to += 1;
-                            } else {
-                                selection.to += 1;
+                            selection.to = string_utils::next_char_boundary(text, selection.to);
+                            if !context.input.is_key_down(KeyCode::Shift) {
                                 selection.from = selection.to;
                             }
                         }
                         _ => {}
                     }
                     selection.clamp(length);
-                    text.selection = Some(selection);
+                    edit_text.selection = Some(selection);
                     ClipEventResult::Handled
                 } else {
                     ClipEventResult::NotHandled

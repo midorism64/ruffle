@@ -7,6 +7,7 @@ use crate::font::{EvalParameters, Font};
 use crate::html::dimensions::{BoxBounds, Position, Size};
 use crate::html::text_format::{FormatSpans, TextFormat, TextSpan};
 use crate::shape_utils::DrawCommand;
+use crate::string_utils;
 use crate::tag_utils::SwfMovie;
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::cmp::{max, min};
@@ -404,7 +405,7 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
         if let Some(font) = library
             .get_font_by_name(&span.font, span.bold, span.italic)
             .filter(|f| !is_device_font && f.has_glyphs())
-            .or_else(|| library.device_font())
+            .or_else(|| context.library.device_font())
         {
             self.font = Some(font);
             return self.font;
@@ -462,7 +463,7 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
         if let Some(bullet_font) = library
             .get_font_by_name(&span.font, span.bold, span.italic)
             .filter(|f| f.has_glyphs())
-            .or_else(|| library.device_font())
+            .or_else(|| context.library.device_font())
             .or(self.font)
         {
             let mut bullet_cursor = self.cursor;
@@ -675,6 +676,7 @@ impl<'gc> LayoutBox<'gc> {
                 for text in span_text.split(&['\n', '\r', '\t'][..]) {
                     let slice_start = text.as_ptr() as usize - span_text.as_ptr() as usize;
                     let delimiter = if slice_start > 0 {
+                        // -1 is ok here since '\n','\r','\t' are all 1 byte
                         span_text
                             .get(slice_start - 1..)
                             .and_then(|s| s.chars().next())
@@ -719,10 +721,10 @@ impl<'gc> LayoutBox<'gc> {
 
                             // This ensures that the space causing the line break
                             // is included in the line it broke.
-                            let breakpoint_index = last_breakpoint + breakpoint;
-                            let is_white_space = text.as_bytes()[breakpoint_index] == 0x20;
-                            let next_breakpoint = 
-                                min(breakpoint_index + if is_white_space { 1 } else { 0 }, text.len());
+                            let next_breakpoint = string_utils::next_char_boundary(
+                                text,
+                                last_breakpoint + breakpoint,
+                            );
 
                             layout_context.append_text(
                                 &text[last_breakpoint..next_breakpoint],

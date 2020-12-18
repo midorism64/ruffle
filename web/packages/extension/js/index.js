@@ -6,21 +6,18 @@ window.RufflePlayer = PublicAPI.negotiate(
     new SourceAPI("extension")
 );
 
-if (obfuscated_event_prefix) {
-    document.addEventListener(
-        obfuscated_event_prefix + "_request",
-        function (e) {
-            let body = JSON.parse(e.detail);
-            let response = {};
+if (obfuscatedEventPrefix) {
+    document.addEventListener(obfuscatedEventPrefix + "_request", function (e) {
+        let body = JSON.parse(e.detail);
+        let response = {};
 
-            if (body.action === "get_page_options") {
-                //response.page_options = page_options;
-            }
-
-            let event = new CustomEvent(obfuscated_event_prefix + "_response", {
-                detail: JSON.stringify(response),
-            });
-            document.dispatchEvent(event);
+        if (body.action === "get_page_options") {
+            //response.page_options = page_options;
         }
-    );
+
+        let event = new CustomEvent(obfuscatedEventPrefix + "_response", {
+            detail: JSON.stringify(response),
+        });
+        document.dispatchEvent(event);
+    });
 }

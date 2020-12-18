@@ -7,6 +7,7 @@ use ruffle_core::shape_utils::DistilledShape;
 use ruffle_core::swf::Matrix;
 use ruffle_render_common_tess::{GradientSpread, GradientType, ShapeTessellator, Vertex};
 use ruffle_web_common::JsResult;
+use std::collections::HashMap;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
     HtmlCanvasElement, OesVertexArrayObject, WebGl2RenderingContext as Gl2, WebGlBuffer,
@@ -51,7 +52,7 @@ pub struct WebGlRenderBackend {
 
     shape_tessellator: ShapeTessellator,
 
-    textures: Vec<(swf::CharacterId, Texture)>,
+    textures: Vec<(Option<swf::CharacterId>, Texture)>,
     meshes: Vec<Mesh>,
 
     quad_shape: ShapeHandle,
@@ -70,6 +71,8 @@ pub struct WebGlRenderBackend {
     view_width: i32,
     view_height: i32,
     view_matrix: [[f32; 4]; 4],
+
+    bitmap_registry: HashMap<BitmapHandle, Bitmap>,
 }
 
 const MAX_GRADIENT_COLORS: usize = 15;
@@ -208,6 +211,7 @@ impl WebGlRenderBackend {
             blend_func: (Gl::SRC_ALPHA, Gl::ONE_MINUS_SRC_ALPHA),
             mult_color: None,
             add_color: None,
+            bitmap_registry: HashMap::new(),
         };
 
         let quad_mesh = renderer.build_quad_mesh()?;
@@ -453,7 +457,7 @@ impl WebGlRenderBackend {
         let lyon_mesh = self.shape_tessellator.tessellate_shape(shape, |id| {
             textures
                 .iter()
-                .find(|(other_id, _tex)| *other_id == id)
+                .find(|(other_id, _tex)| *other_id == Some(id))
                 .map(|tex| (tex.1.width, tex.1.height))
         });
 
@@ -672,12 +676,12 @@ impl WebGlRenderBackend {
 
     fn register_bitmap(
         &mut self,
-        id: swf::CharacterId,
+        id: Option<swf::CharacterId>,
         bitmap: Bitmap,
     ) -> Result<BitmapInfo, Error> {
         let texture = self.gl.create_texture().unwrap();
         self.gl.bind_texture(Gl::TEXTURE_2D, Some(&texture));
-        match bitmap.data {
+        match &bitmap.data {
             BitmapFormat::Rgb(data) => self
                 .gl
                 .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
@@ -689,7 +693,7 @@ impl WebGlRenderBackend {
                     0,
                     Gl::RGB,
                     Gl::UNSIGNED_BYTE,
-                    Some(&data),
+                    Some(data),
                 )
                 .into_js_result()?,
             BitmapFormat::Rgba(data) => self
@@ -703,7 +707,7 @@ impl WebGlRenderBackend {
                     0,
                     Gl::RGBA,
                     Gl::UNSIGNED_BYTE,
-                    Some(&data),
+                    Some(data),
                 )
                 .into_js_result()?,
         }
@@ -719,19 +723,23 @@ impl WebGlRenderBackend {
             .tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, Gl::LINEAR as i32);
 
         let handle = BitmapHandle(self.textures.len());
+        let width = bitmap.width;
+        let height = bitmap.height;
+        self.bitmap_registry.insert(handle, bitmap);
+
         self.textures.push((
             id,
             Texture {
                 texture,
-                width: bitmap.width,
-                height: bitmap.height,
+                width,
+                height,
             },
         ));
 
         Ok(BitmapInfo {
             handle,
-            width: bitmap.width as u16,
-            height: bitmap.height as u16,
+            width: width as u16,
+            height: height as u16,
         })
     }
 }
@@ -790,7 +798,7 @@ impl RenderBackend for WebGlRenderBackend {
         data: &[u8],
     ) -> Result<BitmapInfo, Error> {
         let bitmap = ruffle_core::backend::render::decode_define_bits_jpeg(data, None)?;
-        self.register_bitmap(id, bitmap)
+        self.register_bitmap(Some(id), bitmap)
     }
 
     fn register_bitmap_jpeg_3(
@@ -801,7 +809,7 @@ impl RenderBackend for WebGlRenderBackend {
     ) -> Result<BitmapInfo, Error> {
         let bitmap =
             ruffle_core::backend::render::decode_define_bits_jpeg(jpeg_data, Some(alpha_data))?;
-        self.register_bitmap(id, bitmap)
+        self.register_bitmap(Some(id), bitmap)
     }
 
     fn register_bitmap_png(
@@ -809,7 +817,7 @@ impl RenderBackend for WebGlRenderBackend {
         swf_tag: &swf::DefineBitsLossless,
     ) -> Result<BitmapInfo, Error> {
         let bitmap = ruffle_core::backend::render::decode_define_bits_lossless(swf_tag)?;
-        self.register_bitmap(swf_tag.id, bitmap)
+        self.register_bitmap(Some(swf_tag.id), bitmap)
     }
 
     fn begin_frame(&mut self, clear: Color) {
@@ -926,33 +934,116 @@ impl RenderBackend for WebGlRenderBackend {
         }
     }
 
-    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform) {
-        // TODO: Might be better to make this separate code to render the bitmap
-        // instead of going through render_shape. But render_shape already handles
-        // masking etc.
-        if let Some((id, bitmap)) = self.textures.get(bitmap.0) {
+    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform, smoothing: bool) {
+        self.set_stencil_state();
+        if let Some((_, bitmap)) = self.textures.get(bitmap.0) {
+            let texture = &bitmap.texture;
             // Adjust the quad draw to use the target bitmap.
-            let mesh = &mut self.meshes[self.quad_shape.0];
-            let draw = &mut mesh.draws[0];
+            let mesh = &self.meshes[self.quad_shape.0];
+            let draw = &mesh.draws[0];
             let width = bitmap.width as f32;
             let height = bitmap.height as f32;
-            if let DrawType::Bitmap(BitmapDraw { id: draw_id, .. }) = &mut draw.draw_type {
-                *draw_id = *id;
-            }
-
-            // Scale the quad to the bitmap's dimensions.
-            let scale_transform = Transform {
-                matrix: transform.matrix
-                    * Matrix {
-                        a: width,
-                        d: height,
-                        ..Default::default()
-                    },
-                ..*transform
+            let bitmap_matrix = if let DrawType::Bitmap(BitmapDraw { matrix, .. }) = &draw.draw_type
+            {
+                matrix
+            } else {
+                unreachable!()
             };
 
-            // Render the quad.
-            self.render_shape(self.quad_shape, &scale_transform);
+            // Scale the quad to the bitmap's dimensions.
+            let matrix = transform.matrix
+                * Matrix {
+                    a: width,
+                    d: height,
+                    ..Default::default()
+                };
+
+            let world_matrix = [
+                [matrix.a, matrix.b, 0.0, 0.0],
+                [matrix.c, matrix.d, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [
+                    matrix.tx.to_pixels() as f32,
+                    matrix.ty.to_pixels() as f32,
+                    0.0,
+                    1.0,
+                ],
+            ];
+
+            let mult_color = [
+                transform.color_transform.r_mult,
+                transform.color_transform.g_mult,
+                transform.color_transform.b_mult,
+                transform.color_transform.a_mult,
+            ];
+
+            let add_color = [
+                transform.color_transform.r_add,
+                transform.color_transform.g_add,
+                transform.color_transform.b_add,
+                transform.color_transform.a_add,
+            ];
+
+            self.bind_vertex_array(Some(&draw.vao));
+
+            let (program, src_blend, dst_blend) =
+                (&self.bitmap_program, Gl::ONE, Gl::ONE_MINUS_SRC_ALPHA);
+
+            // Set common render state, while minimizing unnecessary state changes.
+            // TODO: Using designated layout specifiers in WebGL2/OpenGL ES 3, we could guarantee that uniforms
+            // are in the same location between shaders, and avoid changing them unless necessary.
+            if program as *const ShaderProgram != self.active_program {
+                self.gl.use_program(Some(&program.program));
+                self.active_program = program as *const ShaderProgram;
+
+                program.uniform_matrix4fv(&self.gl, ShaderUniform::ViewMatrix, &self.view_matrix);
+
+                self.mult_color = None;
+                self.add_color = None;
+
+                if (src_blend, dst_blend) != self.blend_func {
+                    self.gl.blend_func(src_blend, dst_blend);
+                    self.blend_func = (src_blend, dst_blend);
+                }
+            }
+
+            program.uniform_matrix4fv(&self.gl, ShaderUniform::WorldMatrix, &world_matrix);
+            if Some(mult_color) != self.mult_color {
+                program.uniform4fv(&self.gl, ShaderUniform::MultColor, &mult_color);
+                self.mult_color = Some(mult_color);
+            }
+            if Some(add_color) != self.add_color {
+                program.uniform4fv(&self.gl, ShaderUniform::AddColor, &add_color);
+                self.add_color = Some(add_color);
+            }
+
+            program.uniform_matrix3fv(&self.gl, ShaderUniform::TextureMatrix, &bitmap_matrix);
+
+            // Bind texture.
+            self.gl.active_texture(Gl::TEXTURE0);
+            self.gl.bind_texture(Gl::TEXTURE_2D, Some(&texture));
+            program.uniform1i(&self.gl, ShaderUniform::BitmapTexture, 0);
+
+            // Set texture parameters.
+            let filter = if smoothing {
+                Gl::LINEAR as i32
+            } else {
+                Gl::NEAREST as i32
+            };
+            self.gl
+                .tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, filter);
+            self.gl
+                .tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, filter);
+
+            let wrap = Gl::CLAMP_TO_EDGE as i32;
+            self.gl
+                .tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_S, wrap);
+            self.gl
+                .tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_T, wrap);
+
+            // Draw the triangles.
+            self.gl
+                .draw_elements_with_i32(Gl::TRIANGLES, draw.num_indices, Gl::UNSIGNED_SHORT, 0);
         }
     }
 
@@ -1072,8 +1163,10 @@ impl RenderBackend for WebGlRenderBackend {
                     );
                 }
                 DrawType::Bitmap(bitmap) => {
-                    let texture = if let Some(texture) =
-                        self.textures.iter().find(|(id, _tex)| *id == bitmap.id)
+                    let texture = if let Some(texture) = self
+                        .textures
+                        .iter()
+                        .find(|(id, _tex)| *id == Some(bitmap.id))
                     {
                         &texture.1
                     } else {
@@ -1265,6 +1358,60 @@ impl RenderBackend for WebGlRenderBackend {
             MaskState::DrawMaskedContent
         };
         self.mask_state_dirty = true;
+    }
+
+    fn get_bitmap_pixels(&mut self, bitmap: BitmapHandle) -> Option<Bitmap> {
+        self.bitmap_registry.get(&bitmap).cloned()
+    }
+
+    fn register_bitmap_raw(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        Ok(self
+            .register_bitmap(
+                None,
+                Bitmap {
+                    data: BitmapFormat::Rgba(rgba),
+                    width,
+                    height,
+                },
+            )?
+            .handle)
+    }
+
+    fn update_texture(
+        &mut self,
+        handle: BitmapHandle,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        let texture = if let Some((_id, bitmap)) = self.textures.get(handle.0) {
+            &bitmap.texture
+        } else {
+            return Err("update_texture: Bitmap is not regsitered".into());
+        };
+
+        self.gl.bind_texture(Gl::TEXTURE_2D, Some(&texture));
+
+        self.gl
+            .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
+                Gl::TEXTURE_2D,
+                0,
+                Gl::RGBA as i32,
+                width as i32,
+                height as i32,
+                0,
+                Gl::RGBA,
+                Gl::UNSIGNED_BYTE,
+                Some(&rgba),
+            )
+            .into_js_result()?;
+
+        Ok(handle)
     }
 }
 

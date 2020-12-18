@@ -551,7 +551,7 @@ impl<'gc> Loader<'gc> {
                                     crate::font::Font::from_swf_tag(uc.gc_context, uc.renderer, n);
                                     {
                                     match device_font {
-                                        Ok(o) => uc.library.library_for_movie_mut(movie.clone()).set_device_font(Some(o)),
+                                        Ok(o) => uc.library.set_device_font(Some(o)),
                                         Err(err) => println!("{}", err)
                                     }
                                 }

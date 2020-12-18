@@ -400,7 +400,7 @@ impl WebCanvasRenderBackend {
 
     fn register_bitmap_raw(
         &mut self,
-        id: CharacterId,
+        id: Option<CharacterId>,
         bitmap: Bitmap,
     ) -> Result<BitmapInfo, Error> {
         let (width, height) = (bitmap.width, bitmap.height);
@@ -417,7 +417,10 @@ impl WebCanvasRenderBackend {
             data: png,
         });
 
-        self.id_to_bitmap.insert(id, handle);
+        if let Some(id) = id {
+            self.id_to_bitmap.insert(id, handle);
+        }
+
         Ok(BitmapInfo {
             handle,
             width: width.try_into().expect("JPEG dimensions too large"),
@@ -501,7 +504,7 @@ impl RenderBackend for WebCanvasRenderBackend {
             self.register_bitmap_pure_jpeg(id, data)
         } else {
             let bitmap = ruffle_core::backend::render::decode_define_bits_jpeg(data, None)?;
-            self.register_bitmap_raw(id, bitmap)
+            self.register_bitmap_raw(Some(id), bitmap)
         }
     }
 
@@ -513,7 +516,7 @@ impl RenderBackend for WebCanvasRenderBackend {
     ) -> Result<BitmapInfo, Error> {
         let bitmap =
             ruffle_core::backend::render::decode_define_bits_jpeg(jpeg_data, Some(alpha_data))?;
-        self.register_bitmap_raw(id, bitmap)
+        self.register_bitmap_raw(Some(id), bitmap)
     }
 
     fn register_bitmap_png(
@@ -561,7 +564,7 @@ impl RenderBackend for WebCanvasRenderBackend {
         // Noop
     }
 
-    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform) {
+    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform, _smoothing: bool) {
         if self.deactivating_mask {
             return;
         }
@@ -745,6 +748,92 @@ impl RenderBackend for WebCanvasRenderBackend {
         self.context
             .draw_image_with_html_canvas_element(&maskee_canvas, 0.0, 0.0)
             .unwrap();
+    }
+
+    fn get_bitmap_pixels(&mut self, bitmap: BitmapHandle) -> Option<Bitmap> {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+
+        let canvas: HtmlCanvasElement = document
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+
+        let context: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+
+        let bitmap = &self.bitmaps[bitmap.0];
+
+        canvas.set_width(bitmap.width);
+        canvas.set_height(bitmap.height);
+
+        context
+            .draw_image_with_html_image_element(&bitmap.image, 0.0, 0.0)
+            .unwrap();
+
+        if let Ok(bitmap_pixels) =
+            context.get_image_data(0.0, 0.0, bitmap.width as f64, bitmap.height as f64)
+        {
+            Some(Bitmap {
+                width: bitmap.width,
+                height: bitmap.height,
+                data: BitmapFormat::Rgba(bitmap_pixels.data().to_vec()),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn register_bitmap_raw(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        Ok(self
+            .register_bitmap_raw(
+                None,
+                Bitmap {
+                    width,
+                    height,
+                    data: BitmapFormat::Rgba(rgba),
+                },
+            )?
+            .handle)
+    }
+
+    fn update_texture(
+        &mut self,
+        handle: BitmapHandle,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        let png = Self::bitmap_to_png_data_uri(Bitmap {
+            width,
+            height,
+            data: BitmapFormat::Rgba(rgba),
+        })?;
+
+        let image = HtmlImageElement::new().unwrap();
+        image.set_src(&png);
+
+        self.bitmaps.insert(
+            handle.0,
+            BitmapData {
+                image,
+                width,
+                height,
+                data: png,
+            },
+        );
+
+        Ok(handle)
     }
 }
 

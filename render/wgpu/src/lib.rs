@@ -9,7 +9,7 @@ use ruffle_core::backend::render::{
     RenderBackend, ShapeHandle, Transform,
 };
 use ruffle_core::shape_utils::{DistilledShape, DrawPath};
-use std::convert::TryInto;
+use std::borrow::Cow;
 use swf::{CharacterId, DefineBitsLossless, Glyph, GradientInterpolation};
 
 use bytemuck::{Pod, Zeroable};
@@ -43,6 +43,7 @@ pub mod clap;
 use crate::bitmaps::BitmapSamplers;
 use crate::globals::Globals;
 use ruffle_core::swf::{Matrix, Twips};
+use std::collections::HashMap;
 use std::path::Path;
 pub use wgpu;
 
@@ -89,12 +90,13 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
     meshes: Vec<Mesh>,
     viewport_width: f32,
     viewport_height: f32,
-    textures: Vec<(swf::CharacterId, Texture)>,
     mask_state: MaskState,
+    textures: Vec<(Option<swf::CharacterId>, Texture)>,
     num_masks: u32,
     quad_vbo: wgpu::Buffer,
     quad_ibo: wgpu::Buffer,
     quad_tex_transforms: wgpu::Buffer,
+    bitmap_registry: HashMap<BitmapHandle, Bitmap>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
@@ -269,6 +271,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             quad_vbo,
             quad_ibo,
             quad_tex_transforms,
+            bitmap_registry: HashMap::new(),
         })
     }
 
@@ -537,7 +540,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                         let texture = match self
                             .textures
                             .iter()
-                            .find(|(other_id, _tex)| *other_id == *id)
+                            .find(|(other_id, _tex)| *other_id == Some(*id))
                         {
                             None => {
                                 log::error!("Couldn't fill shape with unknown bitmap {}", id);
@@ -680,7 +683,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
 
     fn register_bitmap(
         &mut self,
-        id: swf::CharacterId,
+        id: Option<swf::CharacterId>,
         bitmap: Bitmap,
         debug_str: &str,
     ) -> BitmapInfo {
@@ -690,8 +693,8 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             depth: 1,
         };
 
-        let data = match bitmap.data {
-            BitmapFormat::Rgba(data) => data,
+        let data: Cow<[u8]> = match &bitmap.data {
+            BitmapFormat::Rgba(data) => Cow::Borrowed(data),
             BitmapFormat::Rgb(data) => {
                 // Expand to RGBA.
                 let mut as_rgba =
@@ -702,11 +705,11 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                     as_rgba.push(data[i + 2]);
                     as_rgba.push(255);
                 }
-                as_rgba
+                Cow::Owned(as_rgba)
             }
         };
 
-        let texture_label = create_debug_label!("{} Texture {}", debug_str, id);
+        let texture_label = create_debug_label!("{} Texture {:?}", debug_str, id);
         let texture = self
             .descriptors
             .device
@@ -736,19 +739,23 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         );
 
         let handle = BitmapHandle(self.textures.len());
+        let width = bitmap.width;
+        let height = bitmap.height;
+
+        self.bitmap_registry.insert(handle, bitmap);
         self.textures.push((
             id,
             Texture {
                 texture,
-                width: bitmap.width,
-                height: bitmap.height,
+                width,
+                height,
             },
         ));
 
         BitmapInfo {
             handle,
-            width: bitmap.width.try_into().unwrap(),
-            height: bitmap.height.try_into().unwrap(),
+            width: width as u16,
+            height: height as u16,
         }
     }
 
@@ -844,7 +851,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
 
     fn register_bitmap_jpeg_2(&mut self, id: u16, data: &[u8]) -> Result<BitmapInfo, Error> {
         let bitmap = ruffle_core::backend::render::decode_define_bits_jpeg(data, None)?;
-        Ok(self.register_bitmap(id, bitmap, "JPEG2"))
+        Ok(self.register_bitmap(Some(id), bitmap, "JPEG2"))
     }
 
     fn register_bitmap_jpeg_3(
@@ -855,12 +862,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
     ) -> Result<BitmapInfo, Error> {
         let bitmap =
             ruffle_core::backend::render::decode_define_bits_jpeg(jpeg_data, Some(alpha_data))?;
-        Ok(self.register_bitmap(id, bitmap, "JPEG3"))
+        Ok(self.register_bitmap(Some(id), bitmap, "JPEG3"))
     }
 
     fn register_bitmap_png(&mut self, swf_tag: &DefineBitsLossless) -> Result<BitmapInfo, Error> {
         let bitmap = ruffle_core::backend::render::decode_define_bits_lossless(swf_tag)?;
-        Ok(self.register_bitmap(swf_tag.id, bitmap, "PNG"))
+        Ok(self.register_bitmap(Some(swf_tag.id), bitmap, "PNG"))
     }
 
     fn begin_frame(&mut self, clear: Color) {
@@ -924,7 +931,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         }
     }
 
-    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform) {
+    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform, smoothing: bool) {
         if let Some((_id, texture)) = self.textures.get(bitmap.0) {
             let (frame_output, encoder) =
                 if let Some((frame_output, encoder)) = &mut self.current_frame {
@@ -1066,7 +1073,9 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             render_pass.set_bind_group(2, &bitmap_bind_group, &[]);
             render_pass.set_bind_group(
                 3,
-                self.descriptors.bitmap_samplers.get_bind_group(false, true),
+                self.descriptors
+                    .bitmap_samplers
+                    .get_bind_group(false, smoothing),
                 &[],
             );
             render_pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
@@ -1488,6 +1497,66 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         } else {
             MaskState::DrawMaskedContent
         };
+    }
+
+    fn get_bitmap_pixels(&mut self, bitmap: BitmapHandle) -> Option<Bitmap> {
+        self.bitmap_registry.get(&bitmap).cloned()
+    }
+
+    fn register_bitmap_raw(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        Ok(self
+            .register_bitmap(
+                None,
+                Bitmap {
+                    height,
+                    width,
+                    data: BitmapFormat::Rgba(rgba),
+                },
+                "RAW",
+            )
+            .handle)
+    }
+
+    fn update_texture(
+        &mut self,
+        handle: BitmapHandle,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        let texture = if let Some((_id, texture)) = self.textures.get(handle.0) {
+            &texture.texture
+        } else {
+            return Err("update_texture: Bitmap not registered".into());
+        };
+
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth: 1,
+        };
+
+        self.descriptors.queue.write_texture(
+            wgpu::TextureCopyView {
+                texture: &texture,
+                mip_level: 0,
+                origin: Default::default(),
+            },
+            &rgba,
+            wgpu::TextureDataLayout {
+                offset: 0,
+                bytes_per_row: 4 * extent.width,
+                rows_per_image: 0,
+            },
+            extent,
+        );
+
+        Ok(handle)
     }
 }
 

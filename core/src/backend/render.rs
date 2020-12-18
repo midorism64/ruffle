@@ -1,6 +1,7 @@
 use crate::shape_utils::DistilledShape;
 pub use crate::{transform::Transform, Color};
 use downcast_rs::Downcast;
+use gc_arena::Collect;
 use std::io::Read;
 pub use swf;
 use swf::Matrix;
@@ -33,7 +34,7 @@ pub trait RenderBackend: Downcast {
     ) -> Result<BitmapInfo, Error>;
 
     fn begin_frame(&mut self, clear: Color);
-    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform);
+    fn render_bitmap(&mut self, bitmap: BitmapHandle, transform: &Transform, smoothing: bool);
     fn render_shape(&mut self, shape: ShapeHandle, transform: &Transform);
     fn draw_rect(&mut self, color: Color, matrix: &Matrix);
     fn end_frame(&mut self);
@@ -42,6 +43,21 @@ pub trait RenderBackend: Downcast {
     fn activate_mask(&mut self);
     fn deactivate_mask(&mut self);
     fn pop_mask(&mut self);
+
+    fn get_bitmap_pixels(&mut self, bitmap: BitmapHandle) -> Option<Bitmap>;
+    fn register_bitmap_raw(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error>;
+    fn update_texture(
+        &mut self,
+        bitmap: BitmapHandle,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error>;
 }
 impl_downcast!(RenderBackend);
 
@@ -50,7 +66,8 @@ type Error = Box<dyn std::error::Error>;
 #[derive(Copy, Clone, Debug)]
 pub struct ShapeHandle(pub usize);
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Collect)]
+#[collect(no_drop)]
 pub struct BitmapHandle(pub usize);
 
 /// Info returned by the `register_bitmap` methods.
@@ -138,7 +155,7 @@ impl RenderBackend for NullRenderer {
     }
     fn begin_frame(&mut self, _clear: Color) {}
     fn end_frame(&mut self) {}
-    fn render_bitmap(&mut self, _bitmap: BitmapHandle, _transform: &Transform) {}
+    fn render_bitmap(&mut self, _bitmap: BitmapHandle, _transform: &Transform, _smoothing: bool) {}
     fn render_shape(&mut self, _shape: ShapeHandle, _transform: &Transform) {}
     fn draw_rect(&mut self, _color: Color, _matrix: &Matrix) {}
     fn draw_letterbox(&mut self, _letterbox: Letterbox) {}
@@ -146,6 +163,28 @@ impl RenderBackend for NullRenderer {
     fn activate_mask(&mut self) {}
     fn deactivate_mask(&mut self) {}
     fn pop_mask(&mut self) {}
+
+    fn get_bitmap_pixels(&mut self, _bitmap: BitmapHandle) -> Option<Bitmap> {
+        None
+    }
+    fn register_bitmap_raw(
+        &mut self,
+        _width: u32,
+        _height: u32,
+        _rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        Ok(BitmapHandle(0))
+    }
+
+    fn update_texture(
+        &mut self,
+        _bitmap: BitmapHandle,
+        _width: u32,
+        _height: u32,
+        _rgba: Vec<u8>,
+    ) -> Result<BitmapHandle, Error> {
+        Ok(BitmapHandle(0))
+    }
 }
 
 /// The format of image data in a DefineBitsJpeg2/3 tag.
@@ -160,7 +199,7 @@ pub enum JpegTagFormat {
 }
 
 /// Decoded bitmap data from an SWF tag.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Bitmap {
     pub width: u32,
     pub height: u32,
@@ -169,10 +208,39 @@ pub struct Bitmap {
 
 /// Decoded bitmap data from an SWF tag.
 /// The image data will have pre-multiplied alpha.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BitmapFormat {
     Rgb(Vec<u8>),
     Rgba(Vec<u8>),
+}
+
+impl From<BitmapFormat> for Vec<i32> {
+    fn from(format: BitmapFormat) -> Self {
+        match format {
+            BitmapFormat::Rgb(x) => x
+                .chunks_exact(3)
+                .map(|chunk| {
+                    let red = chunk[0];
+                    let green = chunk[1];
+                    let blue = chunk[2];
+                    (0xFF << 24) | ((red as i32) << 16) | ((green as i32) << 8) | (blue as i32)
+                })
+                .collect(),
+            BitmapFormat::Rgba(x) => x
+                .chunks_exact(4)
+                .map(|chunk| {
+                    let red = chunk[0];
+                    let green = chunk[1];
+                    let blue = chunk[2];
+                    let alpha = chunk[3];
+                    ((alpha as i32) << 24)
+                        | ((red as i32) << 16)
+                        | ((green as i32) << 8)
+                        | (blue as i32)
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Determines the format of the image data in `data` from a DefineBitsJPEG2/3 tag.

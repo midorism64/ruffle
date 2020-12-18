@@ -235,6 +235,7 @@ swf_tests! {
     (issue_710, "avm1/issue_710", 1),
     (issue_1086, "avm1/issue_1086", 1),
     (issue_1104, "avm1/issue_1104", 3),
+    (issue_1906, "avm1/issue_1906", 2),
     (function_as_function, "avm1/function_as_function", 1),
     (infinite_recursion_function, "avm1/infinite_recursion_function", 1),
     (infinite_recursion_function_in_setter, "avm1/infinite_recursion_function_in_setter", 1),
@@ -248,6 +249,8 @@ swf_tests! {
     (edittext_newline_stripping, "avm1/edittext_newline_stripping", 1),
     (define_local, "avm1/define_local", 1),
     (textfield_properties, "avm1/textfield_properties", 1),
+    (textfield_background_color, "avm1/textfield_background_color", 1),
+    (textfield_border_color, "avm1/textfield_border_color", 1),
     (textfield_variable, "avm1/textfield_variable", 8),
     (error, "avm1/error", 1),
     (color_transform, "avm1/color_transform", 1),
@@ -287,6 +290,7 @@ swf_tests! {
     (date_set_year, "avm1/date/setYear", 1),
     (this_scoping, "avm1/this_scoping", 1),
     (bevel_filter, "avm1/bevel_filter", 1),
+    (bitmap_data, "avm1/bitmap_data", 1),
     (as3_hello_world, "avm2/hello_world", 1),
     (as3_function_call, "avm2/function_call", 1),
     (as3_function_call_via_call, "avm2/function_call_via_call", 1),
@@ -443,6 +447,16 @@ swf_tests! {
     (as3_displayobject_visible, "avm2/displayobject_visible", 4),
     (as3_displayobject_hittestpoint, "avm2/displayobject_hittestpoint", 2),
     (as3_displayobject_hittestobject, "avm2/displayobject_hittestobject", 1),
+    (as3_event_valueof_tostring, "avm2/event_valueof_tostring", 1),
+    (as3_event_bubbles, "avm2/event_bubbles", 1),
+    (as3_event_cancelable, "avm2/event_cancelable", 1),
+    (as3_event_type, "avm2/event_type", 1),
+    (as3_event_clone, "avm2/event_clone", 1),
+    (as3_event_formattostring, "avm2/event_formattostring", 1),
+    (as3_event_isdefaultprevented, "avm2/event_isdefaultprevented", 1),
+    (as3_function_call_via_apply, "avm2/function_call_via_apply", 1),
+    (as3_function_call_arguments, "avm2/function_call_arguments", 1),
+    (as3_function_call_rest, "avm2/function_call_rest", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -453,6 +467,7 @@ swf_tests_approx! {
     (stage_object_properties, "avm1/stage_object_properties", 6, epsilon = 0.051),
     (stage_object_properties_swf6, "avm1/stage_object_properties_swf6", 4, epsilon = 0.051),
     (movieclip_getbounds, "avm1/movieclip_getbounds", 1, epsilon = 0.051),
+    (parse_float, "avm1/parse_float", 1, max_relative = 5.0 * std::f64::EPSILON),
     (edittext_letter_spacing, "avm1/edittext_letter_spacing", 1, epsilon = 15.0), // TODO: Discrepancy in wrapping in letterSpacing = 0.1 test.
     (edittext_align, "avm1/edittext_align", 1, epsilon = 3.0),
     (edittext_margins, "avm1/edittext_margins", 1, epsilon = 5.0), // TODO: Discrepancy in wrapping.

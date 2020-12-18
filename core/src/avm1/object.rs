@@ -9,6 +9,7 @@ use crate::avm1::property::Attribute;
 
 use crate::avm1::activation::Activation;
 use crate::avm1::object::bevel_filter::BevelFilterObject;
+use crate::avm1::object::bitmap_data::BitmapDataObject;
 use crate::avm1::object::blur_filter::BlurFilterObject;
 use crate::avm1::object::color_transform_object::ColorTransformObject;
 use crate::avm1::object::date_object::DateObject;
@@ -27,6 +28,7 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 
 pub mod bevel_filter;
+pub mod bitmap_data;
 pub mod blur_filter;
 pub mod color_transform_object;
 mod custom_object;
@@ -63,6 +65,7 @@ pub mod xml_object;
         BlurFilterObject(BlurFilterObject<'gc>),
         BevelFilterObject(BevelFilterObject<'gc>),
         DateObject(DateObject<'gc>),
+        BitmapData(BitmapDataObject<'gc>),
     }
 )]
 pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy {
@@ -446,6 +449,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
 
     /// Get the underlying `BevelFilterObject`, if it exists
     fn as_bevel_filter_object(&self) -> Option<BevelFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `BitmapDataObject`, if it exists
+    fn as_bitmap_data_object(&self) -> Option<BitmapDataObject<'gc>> {
         None
     }
 
