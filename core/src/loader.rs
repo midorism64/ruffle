@@ -542,22 +542,6 @@ impl<'gc> Loader<'gc> {
                         {
                             *load_complete = true;
                         };
-                        let mut reader = swf::read::Reader::new(DEVICE_FONT_TAG, 8);
-                        let device_swf_font = &reader.read_define_font_2(3);
-
-                        match device_swf_font {
-                            Ok(n) => {
-                                let device_font =
-                                    crate::font::Font::from_swf_tag(uc.gc_context, uc.renderer, n);
-                                    {
-                                    match device_font {
-                                        Ok(o) => uc.library.set_device_font(Some(o)),
-                                        Err(err) => println!("{}", err)
-                                    }
-                                }
-                            },
-                            Err(err) => println!("{}", err)
-                        }
 
                         Ok(())
                     })
