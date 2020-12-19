@@ -282,53 +282,6 @@ impl<'gc> Font<'gc> {
         size
     }
 
-    /// For CJK characters except Hangul, there is no interword spaces,
-    /// so they are split into single characters.
-    /// This is a temporary fix.
-    ///
-    /// TODO: 各言語の細かいルールに対応する
-    fn is_cjk_target_splitting(ch: char) -> bool {
-        return (0x2E80 <= ch as u32 && ch as u32 <= 0x312F) ||
-               (0x3190 <= ch as u32 && ch as u32 <= 0x9FFF);
-    }
-    
-    /// 文字を改行可能位置で分割する。
-    ///
-    /// TODO: CJK以外の言語に対応する
-    /// TODO: テストケースの追加
-    fn split_text(text: &str) -> Vec<&str> {
-        let mut vec = Vec::<&str>::new();
-        
-        let str_split_by_space = text.split(' ');
-        
-        for word in str_split_by_space {
-            let mut start_index = 0;
-            let mut prev_index = 0;
-            let mut char_indices = text.char_indices();
-            let mut next = char_indices.next();
-            
-            while next != None {
-                let (i, ch) = next.unwrap();
-                
-                if Font::is_cjk_target_splitting(ch) {
-                    if prev_index == start_index {
-                        vec.push(&word[start_index..i]);
-                    } else {
-                        vec.push(&word[start_index..prev_index]);
-                        vec.push(&word[prev_index..i]);
-                    }
-                    start_index = i;
-                }
-                prev_index = i;
-                next = char_indices.next();
-            }
-
-            vec.push(word);
-        }
-
-        return vec;
-    }
-
     /// Given a line of text, find the first breakpoint within the text.
     ///
     /// This function assumes only `" "` is valid whitespace to split words on,
@@ -360,7 +313,7 @@ impl<'gc> Font<'gc> {
 
         let mut line_end = 0;
 
-        for word in Font::split_text(text) {
+        for word in text.split(' ') {
             let word_start = word.as_ptr() as usize - text.as_ptr() as usize;
             let word_end = word_start + word.len();
 
