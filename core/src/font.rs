@@ -278,7 +278,7 @@ impl<'gc> Font<'gc> {
                 }
             },
         );
-        
+
         size
     }
 

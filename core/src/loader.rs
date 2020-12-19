@@ -19,7 +19,6 @@ use std::sync::{Arc, Mutex, Weak};
 use thiserror::Error;
 use url::form_urlencoded;
 
-pub static DEVICE_FONT_TAG: &[u8] = include_bytes!("../assets/noto-sans-definefont3.bin");
 pub type Handle = Index;
 
 #[derive(Error, Debug)]
