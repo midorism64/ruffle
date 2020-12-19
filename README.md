@@ -2,7 +2,9 @@
 
 ## これはなに
 [Ruffle](https://github.com/ruffle-rs/ruffle) の日本語関連の不具合を直してみたものです。  
-  
+【2020/12/19追記】このリポジトリで対応していた本家Ruffleの不具合がだいたい直ったようなので、フォント（noto-sans-definefont3.bin）だけ持っていって本家をビルドすれば日本語が表示できます。  
+noto-sans-definefont3.binの作成には、とりぽっぽ🚂💨さん(twitter: @toripoppo0307)に多大なるご協力をいただきました。
+ 
 ## FAQ
  - Q.本家にPR投げないの
    - A.このリポジトリには本家の開発方針的に取り入れられない暫定的な対応も含まれています。  
