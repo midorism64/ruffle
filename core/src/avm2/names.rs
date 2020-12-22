@@ -74,6 +74,10 @@ impl<'gc> Namespace<'gc> {
         Namespace::Package(package_name.into())
     }
 
+    pub fn private(name: impl Into<AvmString<'gc>>) -> Self {
+        Namespace::Private(name.into())
+    }
+
     pub fn is_public(&self) -> bool {
         *self == Self::Package("".into())
     }
