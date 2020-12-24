@@ -7,6 +7,7 @@ use ruffle_core::backend::locale::NullLocaleBackend;
 use ruffle_core::backend::log::LogBackend;
 use ruffle_core::backend::navigator::{NullExecutor, NullNavigatorBackend};
 use ruffle_core::backend::storage::MemoryStorageBackend;
+use ruffle_core::backend::ui::NullUiBackend;
 use ruffle_core::backend::{
     audio::NullAudioBackend, input::NullInputBackend, render::NullRenderer,
 };
@@ -292,6 +293,7 @@ swf_tests! {
     (date_set_year, "avm1/date/setYear", 1),
     (this_scoping, "avm1/this_scoping", 1),
     (bevel_filter, "avm1/bevel_filter", 1),
+    (drop_shadow_filter, "avm1/drop_shadow_filter", 1),
     (bitmap_data, "avm1/bitmap_data", 1),
     (as3_hello_world, "avm2/hello_world", 1),
     (as3_function_call, "avm2/function_call", 1),
@@ -693,6 +695,7 @@ fn run_swf(
         Box::new(MemoryStorageBackend::default()),
         Box::new(NullLocaleBackend::new()),
         Box::new(TestLogBackend::new(trace_output.clone())),
+        Box::new(NullUiBackend::new()),
     )?;
     player.lock().unwrap().set_root_movie(Arc::new(movie));
     player
