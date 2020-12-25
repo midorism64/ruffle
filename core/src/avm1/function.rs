@@ -233,13 +233,15 @@ impl<'gc> Executable<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         this: Object<'gc>,
         base_proto: Option<Object<'gc>>,
-        args: &[Value<'gc>],
+        args_value: &[Value<'gc>],
         reason: ExecutionReason,
         callee: Object<'gc>,
     ) -> Result<Value<'gc>, Error<'gc>> {
+		let mut args: Vec<Value<'gc>> = args_value.to_vec();
         match self {
-            Executable::Native(nf) => nf(activation, this, args),
+            Executable::Native(nf) => nf(activation, this, &args),
             Executable::Action(af) => {
+                args.push(Value::Undefined);
                 let child_scope = GcCell::allocate(
                     activation.context.gc_context,
                     Scope::new_local_scope(af.scope(), activation.context.gc_context),
