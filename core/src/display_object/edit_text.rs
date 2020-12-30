@@ -762,6 +762,12 @@ impl<'gc> EditText<'gc> {
             None
         };
 
+        let start = if let LayoutContent::Text { start, .. } = &lbox.content() {
+            *start
+        } else {
+            0
+        };
+
         // If the font can't be found or has no glyph information, use the "device font" instead.
         // We're cheating a bit and not actually rendering text using the OS/web.
         // Instead, we embed an SWF version of Noto Sans to use as the "device font", and render
@@ -769,31 +775,42 @@ impl<'gc> EditText<'gc> {
         if let Some((text, _tf, font, params, color)) =
             lbox.as_renderable_text(edit_text.text_spans.text())
         {
-            let baseline_adjustmnet =
+            let baseline_adjustment =
                 font.get_baseline_for_height(params.height()) - params.height();
             font.evaluate(
                 text,
-                self.text_transform(color, baseline_adjustmnet),
+                self.text_transform(color.clone(), baseline_adjustment),
                 params,
                 |pos, transform, glyph: &Glyph, advance, x| {
                     // If it's highlighted, override the color.
-                    // TODO: We should draw a black background and change the color to white,
-                    //  but for now let's just change it to be slightly different colour.
                     match selection {
-                        Some(selection) if selection.contains(pos) => {
+                        Some(selection) if selection.contains(start + pos) => {
+                            // Draw black selection rect
+                            let selection_box = context.transform_stack.transform().matrix
+                                * Matrix::create_box(
+                                    advance.to_pixels() as f32,
+                                    params.height().to_pixels() as f32,
+                                    0.0,
+                                    x + Twips::from_pixels(-1.0),
+                                    Twips::from_pixels(2.0),
+                                );
+                            context
+                                .renderer
+                                .draw_rect(Color::from_rgb(0x000000, 0xFF), &selection_box);
+
+                            // Set text color to white
                             context.transform_stack.push(&Transform {
                                 matrix: transform.matrix,
-                                color_transform: transform.color_transform
-                                    * ColorTransform {
-                                        r_mult: 0.75,
-                                        g_mult: 0.75,
-                                        b_mult: 0.75,
-                                        a_mult: 1.0,
-                                        r_add: 0.0,
-                                        g_add: 0.0,
-                                        b_add: 1.0,
-                                        a_add: 0.0,
-                                    },
+                                color_transform: ColorTransform {
+                                    r_mult: 1.0,
+                                    g_mult: 1.0,
+                                    b_mult: 1.0,
+                                    a_mult: 1.0,
+                                    r_add: 0.0,
+                                    g_add: 0.0,
+                                    b_add: 0.0,
+                                    a_add: 0.0,
+                                },
                             });
                         }
                         _ => {
@@ -817,9 +834,7 @@ impl<'gc> EditText<'gc> {
                                     x + Twips::from_pixels(-1.0),
                                     Twips::from_pixels(2.0),
                                 );
-                            context
-                                .renderer
-                                .draw_rect(Color::from_rgb(0x000000, 0xFF), &caret);
+                            context.renderer.draw_rect(color.clone(), &caret);
                         } else if pos == length - 1 && caret_pos == length {
                             let caret = context.transform_stack.transform().matrix
                                 * Matrix::create_box(
@@ -829,9 +844,7 @@ impl<'gc> EditText<'gc> {
                                     x + advance,
                                     Twips::from_pixels(2.0),
                                 );
-                            context
-                                .renderer
-                                .draw_rect(Color::from_rgb(0x000000, 0xFF), &caret);
+                            context.renderer.draw_rect(color.clone(), &caret);
                         }
                     }
                 },
@@ -856,8 +869,9 @@ impl<'gc> EditText<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         set_initial_value: bool,
     ) -> bool {
-        let mut bound = false;
         if let Some(var_path) = self.variable() {
+            let mut bound = false;
+
             // Any previous binding should have been cleared.
             debug_assert!(self.0.read().bound_stage_object.is_none());
 
@@ -917,9 +931,11 @@ impl<'gc> EditText<'gc> {
                     }
                 },
             );
+            bound
+        } else {
+            // No variable for this text field; success by default
+            true
         }
-
-        bound
     }
 
     /// Unsets a bound display object from this text field.
@@ -1339,6 +1355,8 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             }
         }
 
+        context.transform_stack.pop();
+
         context.renderer.deactivate_mask();
         context.renderer.draw_rect(
             Color::from_rgb(0, 0xff),
@@ -1346,7 +1364,6 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         );
         context.renderer.pop_mask();
 
-        context.transform_stack.pop();
         context.transform_stack.pop();
         context.transform_stack.pop();
     }
@@ -1440,15 +1457,29 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
                     let text = edit_text.text_spans.text();
                     let length = text.len();
                     match key_code {
-                        ButtonKeyCode::Left if selection.to > 0 => {
-                            selection.to = string_utils::prev_char_boundary(text, selection.to);
-                            if !context.input.is_key_down(KeyCode::Shift) {
+                        ButtonKeyCode::Left => {
+                            if (context.input.is_key_down(KeyCode::Shift) || selection.is_caret())
+                                && selection.to > 0
+                            {
+                                selection.to = string_utils::prev_char_boundary(text, selection.to);
+                                if !context.input.is_key_down(KeyCode::Shift) {
+                                    selection.from = selection.to;
+                                }
+                            } else if !context.input.is_key_down(KeyCode::Shift) {
+                                selection.to = selection.start();
                                 selection.from = selection.to;
                             }
                         }
-                        ButtonKeyCode::Right if selection.to < length => {
-                            selection.to = string_utils::next_char_boundary(text, selection.to);
-                            if !context.input.is_key_down(KeyCode::Shift) {
+                        ButtonKeyCode::Right => {
+                            if (context.input.is_key_down(KeyCode::Shift) || selection.is_caret())
+                                && selection.to < length
+                            {
+                                selection.to = string_utils::next_char_boundary(text, selection.to);
+                                if !context.input.is_key_down(KeyCode::Shift) {
+                                    selection.from = selection.to;
+                                }
+                            } else if !context.input.is_key_down(KeyCode::Shift) {
+                                selection.to = selection.end();
                                 selection.from = selection.to;
                             }
                         }
