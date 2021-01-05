@@ -8,6 +8,8 @@ use gc_arena::Collect;
 use gc_arena::MutationContext;
 use rand::Rng;
 use std::f64;
+use std::str;
+use std::u8;
 
 mod array;
 pub(crate) mod as_broadcaster;
@@ -22,7 +24,9 @@ pub mod color_matrix_filter;
 mod color_transform;
 pub(crate) mod context_menu;
 pub(crate) mod context_menu_item;
+pub mod convolution_filter;
 mod date;
+pub mod displacement_map_filter;
 pub(crate) mod display_object;
 pub mod drop_shadow_filter;
 pub(crate) mod error;
@@ -392,6 +396,58 @@ pub fn escape<'gc>(
     Ok(AvmString::new(activation.context.gc_context, buffer).into())
 }
 
+pub fn unescape<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let s = if let Some(val) = args.get(0) {
+        val.coerce_to_string(activation)?
+    } else {
+        return Ok(Value::Undefined);
+    };
+
+    let s = s.bytes();
+    let mut out_bytes = Vec::<u8>::with_capacity(s.len());
+
+    let mut remain = 0;
+    let mut hex_chars = Vec::<u8>::with_capacity(2);
+
+    for c in s {
+        match c {
+            b'%' => {
+                remain = 2;
+            }
+            b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' if remain > 0 => {
+                remain -= 1;
+                hex_chars.push(c);
+
+                if remain == 0 {
+                    if let Some(b) = str::from_utf8(&hex_chars)
+                        .ok()
+                        .and_then(|s| u8::from_str_radix(s, 16).ok())
+                    {
+                        out_bytes.push(b);
+                    }
+                    hex_chars.clear();
+                }
+            }
+            _ if remain > 0 => {
+                remain = 0;
+                hex_chars.clear();
+            }
+            _ => {
+                out_bytes.push(c);
+            }
+        }
+    }
+    Ok(AvmString::new(
+        activation.context.gc_context,
+        String::from_utf8_lossy(&out_bytes),
+    )
+    .into())
+}
+
 /// This structure represents all system builtins that are used regardless of
 /// whatever the hell happens to `_global`. These are, of course,
 /// user-modifiable.
@@ -440,6 +496,10 @@ pub struct SystemPrototypes<'gc> {
     pub drop_shadow_filter_constructor: Object<'gc>,
     pub color_matrix_filter: Object<'gc>,
     pub color_matrix_filter_constructor: Object<'gc>,
+    pub displacement_map_filter: Object<'gc>,
+    pub displacement_map_filter_constructor: Object<'gc>,
+    pub convolution_filter: Object<'gc>,
+    pub convolution_filter_constructor: Object<'gc>,
     pub date: Object<'gc>,
     pub bitmap_data: Object<'gc>,
     pub bitmap_data_constructor: Object<'gc>,
@@ -690,6 +750,24 @@ pub fn create_globals<'gc>(
         color_matrix_filter_proto,
     );
 
+    let displacement_map_filter_proto =
+        displacement_map_filter::create_proto(gc_context, bitmap_filter_proto, function_proto);
+    let displacement_map_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(displacement_map_filter::constructor),
+        Some(function_proto),
+        displacement_map_filter_proto,
+    );
+
+    let convolution_filter_proto =
+        convolution_filter::create_proto(gc_context, bitmap_filter_proto, function_proto);
+    let convolution_filter = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(convolution_filter::constructor),
+        Some(function_proto),
+        convolution_filter_proto,
+    );
+
     filters.define_value(
         gc_context,
         "BitmapFilter",
@@ -724,6 +802,18 @@ pub fn create_globals<'gc>(
         gc_context,
         "ColorMatrixFilter",
         color_matrix_filter.into(),
+        EnumSet::empty(),
+    );
+    filters.define_value(
+        gc_context,
+        "DisplacementMapFilter",
+        displacement_map_filter.into(),
+        EnumSet::empty(),
+    );
+    filters.define_value(
+        gc_context,
+        "ConvolutionFilter",
+        convolution_filter.into(),
         EnumSet::empty(),
     );
 
@@ -965,6 +1055,13 @@ pub fn create_globals<'gc>(
         Some(function_proto),
     );
     globals.force_set_function("escape", escape, gc_context, DontEnum, Some(function_proto));
+    globals.force_set_function(
+        "unescape",
+        unescape,
+        gc_context,
+        DontEnum,
+        Some(function_proto),
+    );
 
     globals.add_property(
         gc_context,
@@ -1035,6 +1132,10 @@ pub fn create_globals<'gc>(
             drop_shadow_filter_constructor: drop_shadow_filter,
             color_matrix_filter: color_matrix_filter_proto,
             color_matrix_filter_constructor: color_matrix_filter,
+            displacement_map_filter: displacement_map_filter_proto,
+            displacement_map_filter_constructor: displacement_map_filter,
+            convolution_filter: convolution_filter_proto,
+            convolution_filter_constructor: convolution_filter,
             date: date_proto,
             bitmap_data: bitmap_data_proto,
             bitmap_data_constructor: bitmap_data,

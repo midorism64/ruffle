@@ -8,7 +8,7 @@ use crate::avm1::{Object, TObject, Value};
 use crate::character::Character;
 use crate::display_object::TDisplayObject;
 use enumset::EnumSet;
-use gc_arena::MutationContext;
+use gc_arena::{GcCell, MutationContext};
 
 pub fn constructor<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
@@ -269,16 +269,30 @@ pub fn copy_channel<'gc>(
 
                 let src_bitmap_data = source_bitmap.bitmap_data();
 
-                bitmap_data
-                    .bitmap_data()
-                    .write(activation.context.gc_context)
-                    .copy_channel(
-                        (min_x, min_y),
-                        (src_min_x, src_min_y, src_max_x, src_max_y),
-                        &src_bitmap_data.read(),
-                        source_channel,
-                        dest_channel,
-                    );
+                if GcCell::ptr_eq(bitmap_data.bitmap_data(), src_bitmap_data) {
+                    let src_bitmap_data_clone = src_bitmap_data.read().clone();
+                    bitmap_data
+                        .bitmap_data()
+                        .write(activation.context.gc_context)
+                        .copy_channel(
+                            (min_x, min_y),
+                            (src_min_x, src_min_y, src_max_x, src_max_y),
+                            &src_bitmap_data_clone,
+                            source_channel,
+                            dest_channel,
+                        );
+                } else {
+                    bitmap_data
+                        .bitmap_data()
+                        .write(activation.context.gc_context)
+                        .copy_channel(
+                            (min_x, min_y),
+                            (src_min_x, src_min_y, src_max_x, src_max_y),
+                            &src_bitmap_data.read(),
+                            source_channel,
+                            dest_channel,
+                        );
+                }
             }
 
             return Ok(Value::Undefined);
@@ -656,13 +670,26 @@ pub fn pixel_dissolve<'gc>(
 }
 
 pub fn scroll<'gc>(
-    _activation: &mut Activation<'_, 'gc, '_>,
+    activation: &mut Activation<'_, 'gc, '_>,
     this: Object<'gc>,
-    _args: &[Value<'gc>],
+    args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(bitmap_data) = this.as_bitmap_data_object() {
         if !bitmap_data.disposed() {
-            log::warn!("BitmapData.scroll - not yet implemented");
+            let x = args
+                .get(0)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_i32(activation)?;
+            let y = args
+                .get(1)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_i32(activation)?;
+
+            bitmap_data
+                .bitmap_data()
+                .write(activation.context.gc_context)
+                .scroll(x, y);
+
             return Ok(Value::Undefined);
         }
     }

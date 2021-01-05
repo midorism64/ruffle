@@ -1,7 +1,7 @@
 use lyon::tessellation::{
     self,
     geometry_builder::{BuffersBuilder, FillVertexConstructor, VertexBuffers},
-    FillAttributes, FillTessellator, StrokeAttributes, StrokeTessellator, StrokeVertexConstructor,
+    FillTessellator, FillVertex, StrokeTessellator, StrokeVertex, StrokeVertexConstructor,
 };
 use ruffle_core::backend::render::swf::{self, FillStyle};
 use ruffle_core::backend::render::{
@@ -349,14 +349,14 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
 
         let mut fill_tess = FillTessellator::new();
         let mut stroke_tess = StrokeTessellator::new();
-        let mut lyon_mesh: VertexBuffers<_, u16> = VertexBuffers::new();
+        let mut lyon_mesh: VertexBuffers<_, u32> = VertexBuffers::new();
 
         #[allow(clippy::too_many_arguments)]
         fn flush_draw(
             shape_id: CharacterId,
             draw: IncompleteDrawType,
             draws: &mut Vec<Draw>,
-            lyon_mesh: &mut VertexBuffers<GPUVertex, u16>,
+            lyon_mesh: &mut VertexBuffers<GPUVertex, u32>,
             device: &wgpu::Device,
             pipelines: &Pipelines,
         ) {
@@ -1039,7 +1039,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 .set_vertex_buffer(0, self.quad_vbo.slice(..));
             frame
                 .render_pass
-                .set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                .set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint32);
 
             match self.mask_state {
                 MaskState::NoMask => (),
@@ -1142,7 +1142,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 .set_vertex_buffer(0, draw.vertex_buffer.slice(..));
             frame
                 .render_pass
-                .set_index_buffer(draw.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                .set_index_buffer(draw.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
             match self.mask_state {
                 MaskState::NoMask => (),
@@ -1217,7 +1217,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             .set_vertex_buffer(0, self.quad_vbo.slice(..));
         frame
             .render_pass
-            .set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+            .set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint32);
 
         match self.mask_state {
             MaskState::NoMask => (),
@@ -1425,7 +1425,7 @@ fn create_quad_buffers(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, wg
             color: [1.0, 1.0, 1.0, 1.0],
         },
     ];
-    let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+    let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
 
     let vbo = create_buffer_with_data(
         device,
@@ -1511,18 +1511,18 @@ struct RuffleVertexCtor {
 }
 
 impl FillVertexConstructor<GPUVertex> for RuffleVertexCtor {
-    fn new_vertex(&mut self, position: lyon::math::Point, _: FillAttributes) -> GPUVertex {
+    fn new_vertex(&mut self, vertex: FillVertex) -> GPUVertex {
         GPUVertex {
-            position: [position.x, position.y],
+            position: [vertex.position().x, vertex.position().y],
             color: self.color,
         }
     }
 }
 
 impl StrokeVertexConstructor<GPUVertex> for RuffleVertexCtor {
-    fn new_vertex(&mut self, position: lyon::math::Point, _: StrokeAttributes) -> GPUVertex {
+    fn new_vertex(&mut self, vertex: StrokeVertex) -> GPUVertex {
         GPUVertex {
-            position: [position.x, position.y],
+            position: [vertex.position().x, vertex.position().y],
             color: self.color,
         }
     }

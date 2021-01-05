@@ -326,7 +326,7 @@ export class RufflePlayer extends HTMLElement {
         // bit before checking if autoplay is supported and applying the instance config.
         if (this.audioState() !== "running") {
             this.container.style.visibility = "hidden";
-            await new Promise((resolve) => {
+            await new Promise<void>((resolve) => {
                 window.setTimeout(() => {
                     resolve();
                 }, 200);
@@ -811,6 +811,38 @@ export class RufflePlayer extends HTMLElement {
 
     protected debugPlayerInfo(): string {
         return `Allows script access: ${this.allowScriptAccess}\n`;
+    }
+}
+
+/**
+ * Returns whether a SWF file can call JavaScript code in the surrounding HTML file.
+ *
+ * @param access The value of the `allowScriptAccess` attribute.
+ * @param url The URL of the SWF file.
+ * @returns True if script access is allowed.
+ */
+export function isScriptAccessAllowed(
+    access: string | null,
+    url: string
+): boolean {
+    if (!access) {
+        access = "sameDomain";
+    }
+    switch (access.toLowerCase()) {
+        case "always":
+            return true;
+        case "never":
+            return false;
+        case "samedomain":
+        default:
+            try {
+                return (
+                    new URL(window.location.href).origin ===
+                    new URL(url, window.location.href).origin
+                );
+            } catch {
+                return false;
+            }
     }
 }
 
