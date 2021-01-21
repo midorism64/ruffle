@@ -3,9 +3,7 @@
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
-use crate::avm1::globals::display_object::{
-    self, AVM_DEPTH_BIAS, AVM_MAX_DEPTH, AVM_MAX_REMOVE_DEPTH,
-};
+use crate::avm1::globals::display_object::{self, AVM_DEPTH_BIAS, AVM_MAX_DEPTH};
 use crate::avm1::globals::matrix::gradient_object_to_matrix;
 use crate::avm1::property::Attribute::*;
 use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
@@ -30,10 +28,10 @@ use swf::{
 /// Implements `MovieClip`
 pub fn constructor<'gc>(
     _activation: &mut Activation<'_, 'gc, '_>,
-    _this: Object<'gc>,
+    this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    Ok(Value::Undefined)
+    Ok(this.into())
 }
 
 macro_rules! with_movie_clip {
@@ -191,7 +189,6 @@ pub fn create_proto<'gc>(
         "nextFrame" => next_frame,
         "play" => play,
         "prevFrame" => prev_frame,
-        "removeMovieClip" => remove_movie_clip,
         "startDrag" => start_drag,
         "stop" => stop,
         "stopDrag" => stop_drag,
@@ -206,6 +203,14 @@ pub fn create_proto<'gc>(
         "lineStyle" => line_style,
         "clear" => clear,
         "attachBitmap" => attach_bitmap
+    );
+
+    object.force_set_function(
+        "removeMovieClip",
+        remove_movie_clip,
+        gc_context,
+        DontDelete | ReadOnly | DontEnum,
+        Some(fn_proto),
     );
 
     with_movie_clip_props!(
@@ -794,7 +799,10 @@ fn get_bytes_loaded<'gc>(
     _activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    Ok((movie_clip.movie().unwrap().data().len() + 20).into())
+    Ok(movie_clip
+        .movie()
+        .map(|mv| (mv.header().uncompressed_length).into())
+        .unwrap_or(Value::Undefined))
 }
 
 fn get_bytes_total<'gc>(
@@ -802,7 +810,10 @@ fn get_bytes_total<'gc>(
     _activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    Ok((movie_clip.movie().unwrap().data().len() + 20).into())
+    Ok(movie_clip
+        .movie()
+        .map(|mv| (mv.header().uncompressed_length).into())
+        .unwrap_or(Value::Undefined))
 }
 
 fn get_next_highest_depth<'gc>(
@@ -919,26 +930,17 @@ fn prev_frame<'gc>(
     Ok(Value::Undefined)
 }
 
-pub fn remove_movie_clip<'gc>(
-    movie_clip: MovieClip<'gc>,
+fn remove_movie_clip<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
+    this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let depth = movie_clip.depth().wrapping_sub(0);
-    // Can only remove positive depths (when offset by the AVM depth bias).
-    // Generally this prevents you from removing non-dynamically created clips,
-    // although you can get around it with swapDepths.
-    // TODO: Figure out the derivation of this range.
-    if depth >= AVM_DEPTH_BIAS && depth < AVM_MAX_REMOVE_DEPTH && !movie_clip.removed() {
-        // Need a parent to remove from.
-        let mut parent = if let Some(parent) = movie_clip.parent().and_then(|o| o.as_movie_clip()) {
-            parent
-        } else {
-            return Ok(Value::Undefined);
-        };
-
-        parent.remove_child(&mut activation.context, movie_clip.into(), EnumSet::all());
+    // `removeMovieClip` can remove all types of display object,
+    // e.g. `MovieClip.prototype.removeMovieClip.apply(textField);`
+    if let Some(this) = this.as_display_object() {
+        crate::avm1::globals::display_object::remove_display_object(this, activation);
     }
+
     Ok(Value::Undefined)
 }
 
@@ -1249,7 +1251,7 @@ fn transform<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let constructor = activation.context.avm1.prototypes.transform_constructor;
     let cloned = constructor.construct(activation, &[this.object()])?;
-    Ok(cloned.into())
+    Ok(cloned)
 }
 
 fn set_transform<'gc>(

@@ -6,7 +6,7 @@
 //!
 //! This library consists of a `read` module for decoding SWF data, and a `write` library for
 //! writing SWF data.
-#![allow(clippy::unusual_byte_groupings, clippy::unknown_clippy_lints)]
+#![allow(clippy::unusual_byte_groupings)]
 
 extern crate byteorder;
 #[cfg(feature = "flate2")]
@@ -21,6 +21,7 @@ pub mod avm1;
 pub mod avm2;
 pub mod error;
 pub mod read;
+mod string;
 mod tag_code;
 mod types;
 pub mod write;
@@ -29,7 +30,8 @@ pub mod write;
 mod test_data;
 
 /// Reexports
-pub use read::{read_swf, read_swf_header};
+pub use read::{decompress_swf, parse_swf};
+pub use string::*;
 pub use tag_code::TagCode;
 pub use types::*;
 pub use write::write_swf;

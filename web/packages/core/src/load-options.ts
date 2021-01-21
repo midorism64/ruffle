@@ -26,6 +26,30 @@ export enum AutoPlay {
 }
 
 /**
+ * Controls whether the content is letterboxed or pillarboxed when the
+ * player's aspect ratio does not match the movie's aspect ratio.
+ *
+ * When letterboxed, black bars will be rendered around the exterior
+ * margins of the content.
+ */
+export enum Letterbox {
+    /**
+     * The content will never be letterboxed.
+     */
+    Off = "off",
+
+    /**
+     * The content will only be letterboxed if the content is running fullscreen.
+     */
+    Fullscreen = "fullscreen",
+
+    /**
+     * The content will always be letterboxed.
+     */
+    On = "on",
+}
+
+/**
  * When the player is muted, this controls whether or not Ruffle will show a
  * "click to unmute" overlay on top of the movie.
  */
@@ -39,6 +63,17 @@ export enum UnmuteOverlay {
      * Don't show an overlay and pretend that everything is fine.
      */
     Hidden = "hidden",
+}
+
+/**
+ * Console logging level.
+ */
+export enum LogLevel {
+    Error = "error",
+    Warn = "warn",
+    Info = "info",
+    Debug = "debug",
+    Trace = "trace",
 }
 
 /**
@@ -63,6 +98,23 @@ export interface BaseLoadOptions {
     autoplay?: AutoPlay;
 
     /**
+     * Controls the background color of the player.
+     * Must be an HTML color (e.g. "#FFFFFF"). CSS colors are not allowed.
+     * `null` uses the background color of the SWF file.
+     *
+     * @default null
+     */
+    backgroundColor?: string | null;
+
+    /**
+     * Controls letterbox behavior when the Flash container size does not
+     * match the movie size.
+     *
+     * @default Letterbox.Fullscreen
+     */
+    letterbox?: Letterbox;
+
+    /**
      * Controls the visibility of the unmute overlay when the player
      * is started muted.
      *
@@ -82,6 +134,21 @@ export interface BaseLoadOptions {
      * @default true
      */
     upgradeToHttps?: boolean;
+
+    /**
+     * Whether or not to display an overlay with a warning when
+     * loading a movie with unsupported content.
+     *
+     * @default true
+     */
+    warnOnUnsupportedContent?: boolean;
+
+    /**
+     * Console logging level.
+     *
+     * @default LogLevel.Error
+     */
+    logLevel?: LogLevel;
 }
 
 /**

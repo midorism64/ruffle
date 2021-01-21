@@ -8,9 +8,8 @@ use crate::backend::input::{InputBackend, MouseCursor};
 use crate::backend::locale::LocaleBackend;
 use crate::backend::navigator::{NavigatorBackend, RequestOptions};
 use crate::backend::storage::StorageBackend;
-use crate::backend::{
-    audio::AudioBackend, log::LogBackend, render::Letterbox, render::RenderBackend, ui::UiBackend,
-};
+use crate::backend::{audio::AudioBackend, log::LogBackend, render::RenderBackend, ui::UiBackend};
+use crate::config::Letterbox;
 use crate::context::{ActionQueue, ActionType, RenderContext, UpdateContext};
 use crate::display_object::{EditText, MorphShape, MovieClip};
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode, PlayerEvent};
@@ -151,6 +150,8 @@ pub struct Player {
 
     swf: Arc<SwfMovie>,
 
+    warn_on_unsupported_content: bool,
+
     is_playing: bool,
     needs_render: bool,
 
@@ -164,13 +165,14 @@ pub struct Player {
     transform_stack: TransformStack,
     view_matrix: Matrix,
     inverse_view_matrix: Matrix,
+    view_bounds: BoundingBox,
 
     storage: Storage,
 
     rng: SmallRng,
 
     gc_arena: GcArena,
-    background_color: Color,
+    background_color: Option<Color>,
 
     frame_rate: f64,
 
@@ -241,18 +243,16 @@ impl Player {
 
             swf: fake_movie.clone(),
 
+            warn_on_unsupported_content: true,
+
             is_playing: false,
             needs_render: true,
 
-            background_color: Color {
-                r: 255,
-                g: 255,
-                b: 255,
-                a: 255,
-            },
+            background_color: None,
             transform_stack: TransformStack::new(),
             view_matrix: Default::default(),
             inverse_view_matrix: Default::default(),
+            view_bounds: Default::default(),
 
             rng: SmallRng::seed_from_u64(chrono::Utc::now().timestamp_millis() as u64),
 
@@ -260,7 +260,7 @@ impl Player {
                 GcRoot(GcCell::allocate(
                     gc_context,
                     GcRootData {
-                        library: Library::default(),
+                        library: Library::empty(gc_context),
                         levels: BTreeMap::new(),
                         mouse_hovered_object: None,
                         drag_object: None,
@@ -285,7 +285,7 @@ impl Player {
             movie_height,
             viewport_width: movie_width,
             viewport_height: movie_height,
-            letterbox: Letterbox::None,
+            letterbox: Letterbox::Fullscreen,
 
             mouse_pos: (Twips::new(0), Twips::new(0)),
             is_mouse_down: false,
@@ -519,6 +519,35 @@ impl Player {
 
     pub fn needs_render(&self) -> bool {
         self.needs_render
+    }
+
+    pub fn background_color(&self) -> Option<Color> {
+        self.background_color.clone()
+    }
+
+    pub fn set_background_color(&mut self, color: Option<Color>) {
+        self.background_color = color
+    }
+
+    pub fn letterbox(&self) -> Letterbox {
+        self.letterbox
+    }
+
+    pub fn set_letterbox(&mut self, letterbox: Letterbox) {
+        self.letterbox = letterbox
+    }
+
+    fn should_letterbox(&self) -> bool {
+        self.letterbox == Letterbox::On
+            || (self.letterbox == Letterbox::Fullscreen && self.user_interface.is_fullscreen())
+    }
+
+    pub fn warn_on_unsupported_content(&self) -> bool {
+        self.warn_on_unsupported_content
+    }
+
+    pub fn set_warn_on_unsupported_content(&mut self, warn_on_unsupported_content: bool) {
+        self.warn_on_unsupported_content = warn_on_unsupported_content
     }
 
     pub fn movie_width(&self) -> u32 {
@@ -854,7 +883,7 @@ impl Player {
                 lib.register_character(id, crate::character::Character::MorphShape(morph_shape));
             }
         });
-        if is_action_script_3 {
+        if is_action_script_3 && self.warn_on_unsupported_content {
             self.user_interface.message("This SWF contains ActionScript 3 which is not yet supported by Ruffle. The movie may not work as intended.");
         }
     }
@@ -875,15 +904,11 @@ impl Player {
     }
 
     pub fn render(&mut self) {
-        let view_bounds = BoundingBox {
-            x_min: Twips::new(0),
-            y_min: Twips::new(0),
-            x_max: Twips::from_pixels(self.movie_width.into()),
-            y_max: Twips::from_pixels(self.movie_height.into()),
-            valid: true,
-        };
-
-        self.renderer.begin_frame(self.background_color.clone());
+        let background_color = self
+            .background_color
+            .clone()
+            .unwrap_or_else(|| Color::from_rgb(0xffffff, 255));
+        self.renderer.begin_frame(background_color);
 
         let (renderer, transform_stack) = (&mut self.renderer, &mut self.transform_stack);
 
@@ -891,6 +916,8 @@ impl Player {
             matrix: self.view_matrix,
             ..Default::default()
         });
+
+        let view_bounds = self.view_bounds.clone();
         self.gc_arena.mutate(|_gc_context, gc_root| {
             let root_data = gc_root.0.read();
             let mut render_context = RenderContext {
@@ -908,7 +935,10 @@ impl Player {
         });
         transform_stack.pop();
 
-        self.renderer.draw_letterbox(self.letterbox);
+        if self.should_letterbox() {
+            self.draw_letterbox();
+        }
+
         self.renderer.end_frame();
         self.needs_render = false;
     }
@@ -1070,7 +1100,7 @@ impl Player {
     }
 
     fn build_matrices(&mut self) {
-        // Create  view matrix to scale stage into viewport area.
+        // Create view matrix to scale stage into viewport area.
         let (movie_width, movie_height) = (self.movie_width as f32, self.movie_height as f32);
         let (viewport_width, viewport_height) =
             (self.viewport_width as f32, self.viewport_height as f32);
@@ -1094,15 +1124,26 @@ impl Player {
         self.inverse_view_matrix = self.view_matrix;
         self.inverse_view_matrix.invert();
 
-        // Calculate letterbox dimensions.
-        // TODO: Letterbox should be an option; the original Flash Player defaults to showing content
-        // in the extra margins.
-        self.letterbox = if margin_width > 0.0 {
-            Letterbox::Pillarbox(margin_width)
-        } else if margin_height > 0.0 {
-            Letterbox::Letterbox(margin_height)
+        self.view_bounds = if self.should_letterbox() {
+            // No letterbox: movie area
+            BoundingBox {
+                x_min: Twips::new(0),
+                y_min: Twips::new(0),
+                x_max: Twips::from_pixels(f64::from(self.movie_width)),
+                y_max: Twips::from_pixels(f64::from(self.movie_height)),
+                valid: true,
+            }
         } else {
-            Letterbox::None
+            // No letterbox: full visible stage area
+            let margin_width = f64::from(margin_width / scale);
+            let margin_height = f64::from(margin_height / scale);
+            BoundingBox {
+                x_min: Twips::from_pixels(-margin_width),
+                y_min: Twips::from_pixels(-margin_height),
+                x_max: Twips::from_pixels(f64::from(self.movie_width) + margin_width),
+                y_max: Twips::from_pixels(f64::from(self.movie_height) + margin_height),
+                valid: true,
+            }
         };
     }
 
@@ -1240,8 +1281,12 @@ impl Player {
         renderer: &mut dyn RenderBackend,
     ) -> Result<crate::font::Font<'gc>, Error> {
         let mut reader = swf::read::Reader::new(data, 8);
-        let device_font =
-            crate::font::Font::from_swf_tag(gc_context, renderer, &reader.read_define_font_2(3)?)?;
+        let device_font = crate::font::Font::from_swf_tag(
+            gc_context,
+            renderer,
+            &reader.read_define_font_2(3)?,
+            reader.encoding(),
+        )?;
         Ok(device_font)
     }
 
@@ -1329,6 +1374,58 @@ impl Player {
 
     pub fn set_max_execution_duration(&mut self, max_execution_duration: Duration) {
         self.max_execution_duration = max_execution_duration
+    }
+
+    fn draw_letterbox(&mut self) {
+        let black = Color::from_rgb(0, 255);
+        let viewport_width = self.viewport_width as f32;
+        let viewport_height = self.viewport_height as f32;
+
+        let margin_width = self.view_matrix.tx.to_pixels() as f32;
+        let margin_height = self.view_matrix.ty.to_pixels() as f32;
+        if margin_height > 0.0 {
+            self.renderer.draw_rect(
+                black.clone(),
+                &Matrix::create_box(
+                    viewport_width,
+                    margin_height,
+                    0.0,
+                    Twips::default(),
+                    Twips::default(),
+                ),
+            );
+            self.renderer.draw_rect(
+                black,
+                &Matrix::create_box(
+                    viewport_width,
+                    margin_height,
+                    0.0,
+                    Twips::default(),
+                    Twips::from_pixels((viewport_height - margin_height) as f64),
+                ),
+            );
+        } else if margin_width > 0.0 {
+            self.renderer.draw_rect(
+                black.clone(),
+                &Matrix::create_box(
+                    margin_width,
+                    viewport_height,
+                    0.0,
+                    Twips::default(),
+                    Twips::default(),
+                ),
+            );
+            self.renderer.draw_rect(
+                black,
+                &Matrix::create_box(
+                    margin_width,
+                    viewport_height,
+                    0.0,
+                    Twips::from_pixels((viewport_width - margin_width) as f64),
+                    Twips::default(),
+                ),
+            );
+        }
     }
 }
 

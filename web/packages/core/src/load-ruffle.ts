@@ -4,8 +4,7 @@
  * Conditional ruffle loader
  */
 
-import { Ruffle } from "../pkg/ruffle_web";
-
+import init, { Ruffle } from "../pkg/ruffle_web";
 import { setPolyfillsOnLoad } from "./js-polyfills";
 
 /**
@@ -23,6 +22,8 @@ async function fetchRuffle(): Promise<{ new (...args: any[]): Ruffle }> {
     // libraries, if needed.
     setPolyfillsOnLoad();
 
+    let isExtension = true;
+
     try {
         // If ruffleRuntimePath is defined then we are executing inside the extension
         // closure. In that case, we configure our local Webpack instance.
@@ -33,12 +34,26 @@ async function fetchRuffle(): Promise<{ new (...args: any[]): Ruffle }> {
         if (!(e instanceof ReferenceError)) {
             throw e;
         }
+        isExtension = false;
     }
 
     // We currently assume that if we are not executing inside the extension,
     // then we can use webpack to get Ruffle.
-    const module = await import("../pkg/ruffle_web");
-    return module.Ruffle;
+
+    try {
+        // wasm files are set to use file-loader,
+        // so this package will resolve to the URL of the wasm file.
+        const ruffleWasm = await import(
+            /* webpackMode: "eager" */
+            "../pkg/ruffle_web_bg.wasm"
+        );
+        await init(ruffleWasm.default);
+    } catch (e) {
+        e.ruffleIsExtension = isExtension;
+        throw e;
+    }
+
+    return Ruffle;
 }
 
 let lastLoaded: Promise<{ new (...args: any[]): Ruffle }> | null = null;

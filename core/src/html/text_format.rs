@@ -189,16 +189,16 @@ impl TextFormat {
     /// This requires an `UpdateContext` as we will need to retrieve some font
     /// information from the actually-referenced font.
     pub fn from_swf_tag<'gc>(
-        et: swf::EditText,
+        et: swf::EditText<'_>,
         swf_movie: Arc<SwfMovie>,
         context: &mut UpdateContext<'_, 'gc, '_>,
     ) -> Self {
+        let encoding = swf_movie.encoding();
         let movie_library = context.library.library_for_movie_mut(swf_movie);
-
         let font = et.font_id.and_then(|fid| movie_library.get_font(fid));
         let font_class = et
             .font_class_name
-            .clone()
+            .map(|s| s.to_string_lossy(encoding))
             .or_else(|| font.map(|font| font.descriptor().class().to_string()))
             .unwrap_or_else(|| "Times New Roman".to_string());
         let align = et.layout.clone().map(|l| l.align);

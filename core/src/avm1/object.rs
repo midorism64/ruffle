@@ -18,6 +18,8 @@ use crate::avm1::object::date_object::DateObject;
 use crate::avm1::object::displacement_map_filter::DisplacementMapFilterObject;
 use crate::avm1::object::drop_shadow_filter::DropShadowFilterObject;
 use crate::avm1::object::glow_filter::GlowFilterObject;
+use crate::avm1::object::gradient_bevel_filter::GradientBevelFilterObject;
+use crate::avm1::object::gradient_glow_filter::GradientGlowFilterObject;
 use crate::avm1::object::transform_object::TransformObject;
 use crate::avm1::object::xml_attributes_object::XMLAttributesObject;
 use crate::avm1::object::xml_idmap_object::XMLIDMapObject;
@@ -43,6 +45,8 @@ pub mod date_object;
 pub mod displacement_map_filter;
 pub mod drop_shadow_filter;
 pub mod glow_filter;
+pub mod gradient_bevel_filter;
+pub mod gradient_glow_filter;
 pub mod script_object;
 pub mod shared_object;
 pub mod sound_object;
@@ -79,6 +83,8 @@ pub mod xml_object;
         ColorMatrixFilterObject(ColorMatrixFilterObject<'gc>),
         DisplacementMapFilterObject(DisplacementMapFilterObject<'gc>),
         ConvolutionFilterObject(ConvolutionFilterObject<'gc>),
+        GradientBevelFilterObject(GradientBevelFilterObject<'gc>),
+        GradientGlowFilterObject(GradientGlowFilterObject<'gc>),
         DateObject(DateObject<'gc>),
         BitmapData(BitmapDataObject<'gc>),
     }
@@ -138,10 +144,10 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// Calling this on something other than a constructor will return a new Undefined object.
     fn construct(
         &self,
-        activation: &mut Activation<'_, 'gc, '_>,
+        _activation: &mut Activation<'_, 'gc, '_>,
         _args: &[Value<'gc>],
-    ) -> Result<Object<'gc>, Error<'gc>> {
-        Ok(Value::Undefined.coerce_to_object(activation))
+    ) -> Result<Value<'gc>, Error<'gc>> {
+        Ok(Value::Undefined)
     }
 
     /// Takes an already existing object and performs this constructor (if valid) on it.
@@ -489,6 +495,16 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
 
     /// Get the underlying `ConvolutionFilterObject`, if it exists
     fn as_convolution_filter_object(&self) -> Option<ConvolutionFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `GradientBevelFilterObject`, if it exists
+    fn as_gradient_bevel_filter_object(&self) -> Option<GradientBevelFilterObject<'gc>> {
+        None
+    }
+
+    /// Get the underlying `GradientGlowFilterObject`, if it exists
+    fn as_gradient_glow_filter_object(&self) -> Option<GradientGlowFilterObject<'gc>> {
         None
     }
 

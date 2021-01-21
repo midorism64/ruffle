@@ -8,10 +8,10 @@ use gc_arena::MutationContext;
 
 pub fn constructor<'gc>(
     _activation: &mut Activation<'_, 'gc, '_>,
-    _this: Object<'gc>,
+    this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    Ok(Value::Undefined)
+    Ok(this.into())
 }
 
 pub fn clone<'gc>(
@@ -27,7 +27,7 @@ pub fn clone<'gc>(
         let quality = this.get("quality", activation)?;
 
         let cloned = proto.construct(activation, &[blur_x, blur_y, quality])?;
-        return Ok(cloned.into());
+        return Ok(cloned);
     }
 
     if let Some(this) = this.as_bevel_filter_object() {
@@ -63,7 +63,7 @@ pub fn clone<'gc>(
                 knockout,
             ],
         )?;
-        return Ok(cloned.into());
+        return Ok(cloned);
     }
 
     if let Some(this) = this.as_glow_filter_object() {
@@ -80,7 +80,7 @@ pub fn clone<'gc>(
             activation,
             &[color, alpha, blur_x, blur_y, strength, quality],
         )?;
-        return Ok(cloned.into());
+        return Ok(cloned);
     }
 
     if let Some(this) = this.as_drop_shadow_filter_object() {
@@ -118,7 +118,7 @@ pub fn clone<'gc>(
                 hide_object,
             ],
         )?;
-        return Ok(cloned.into());
+        return Ok(cloned);
     }
 
     if let Some(this) = this.as_color_matrix_filter_object() {
@@ -132,7 +132,7 @@ pub fn clone<'gc>(
 
         let cloned = proto.construct(activation, &[matrix])?;
 
-        return Ok(cloned.into());
+        return Ok(cloned);
     }
 
     if let Some(this) = this.as_displacement_map_filter_object() {
@@ -167,7 +167,7 @@ pub fn clone<'gc>(
             ],
         )?;
 
-        return Ok(cloned.into());
+        return Ok(cloned);
     }
 
     if let Some(this) = this.as_convolution_filter_object() {
@@ -202,7 +202,67 @@ pub fn clone<'gc>(
             ],
         )?;
 
-        return Ok(cloned.into());
+        return Ok(cloned);
+    }
+
+    if let Some(this) = this.as_gradient_bevel_filter_object() {
+        let proto = activation
+            .context
+            .avm1
+            .prototypes
+            .gradient_bevel_filter_constructor;
+
+        let distance = this.get("distance", activation)?;
+        let angle = this.get("angle", activation)?;
+        let colors = this.get("colors", activation)?;
+        let alphas = this.get("alphas", activation)?;
+        let ratios = this.get("ratios", activation)?;
+        let blur_x = this.get("blurX", activation)?;
+        let blur_y = this.get("blurY", activation)?;
+        let strength = this.get("strength", activation)?;
+        let quality = this.get("quality", activation)?;
+        let type_ = this.get("type", activation)?;
+        let knockout = this.get("knockout", activation)?;
+
+        let cloned = proto.construct(
+            activation,
+            &[
+                distance, angle, colors, alphas, ratios, blur_x, blur_y, strength, quality, type_,
+                knockout,
+            ],
+        )?;
+
+        return Ok(cloned);
+    }
+
+    if let Some(this) = this.as_gradient_glow_filter_object() {
+        let proto = activation
+            .context
+            .avm1
+            .prototypes
+            .gradient_glow_filter_constructor;
+
+        let distance = this.get("distance", activation)?;
+        let angle = this.get("angle", activation)?;
+        let colors = this.get("colors", activation)?;
+        let alphas = this.get("alphas", activation)?;
+        let ratios = this.get("ratios", activation)?;
+        let blur_x = this.get("blurX", activation)?;
+        let blur_y = this.get("blurY", activation)?;
+        let strength = this.get("strength", activation)?;
+        let quality = this.get("quality", activation)?;
+        let type_ = this.get("type", activation)?;
+        let knockout = this.get("knockout", activation)?;
+
+        let cloned = proto.construct(
+            activation,
+            &[
+                distance, angle, colors, alphas, ratios, blur_x, blur_y, strength, quality, type_,
+                knockout,
+            ],
+        )?;
+
+        return Ok(cloned);
     }
 
     Ok(Value::Undefined)

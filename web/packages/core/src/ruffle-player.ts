@@ -22,6 +22,16 @@ export const FLASH_ACTIVEX_CLASSID =
 const RUFFLE_ORIGIN = "https://ruffle.rs";
 const DIMENSION_REGEX = /^\s*(\d+(\.\d+)?(%)?)/;
 
+enum PanicError {
+    Unknown,
+    FileProtocol,
+    JavascriptConfiguration,
+    JavascriptConflict,
+    WasmCors,
+    WasmMimeType,
+    WasmNotFound,
+}
+
 declare global {
     interface Document {
         webkitFullscreenEnabled?: boolean;
@@ -286,29 +296,29 @@ export class RufflePlayer extends HTMLElement {
         }
 
         const ruffleConstructor = await this.ruffleConstructor.catch((e) => {
-            console.error("Serious error loading Ruffle: " + e);
+            console.error(`Serious error loading Ruffle: ${e}`);
 
             // Serious duck typing. In error conditions, let's not make assumptions.
-            const message =
-                e && e.message ? String(e.message).toLowerCase() : "";
-            if (message.indexOf("mime") >= 0) {
-                this.panicked = true;
-                this.container.innerHTML = `
-                    <div id="panic">
-                        <div id="panic-title">Something went wrong :(</div>
-                        <div id="panic-body">
-                            <p>Ruffle has encountered a major issue whilst trying to initialize.</p>
-                            <p>This web server is either not serving ".wasm" files with the correct MIME type, or the file cannot be found.</p>
-                            <p>If you are the server administrator, please consult the Ruffle wiki for help.</p>
-                        </div>
-                        <div id="panic-footer">
-                            <ul>
-                                <li><a href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#configure-wasm-mime-type">View Ruffle Wiki</a></li>
-                            </ul>
-                        </div>
-                    </div>
-                `;
+            if (window.location.protocol === "file:") {
+                e.ruffleIndexError = PanicError.FileProtocol;
+            } else if (!e.ruffleIsExtension) {
+                e.ruffleIndexError = PanicError.WasmNotFound;
+                const message = String(e.message).toLowerCase();
+                if (message.includes("mime")) {
+                    e.ruffleIndexError = PanicError.WasmMimeType;
+                } else if (
+                    message.includes("networkerror") ||
+                    message.includes("failed to fetch")
+                ) {
+                    e.ruffleIndexError = PanicError.WasmCors;
+                } else if (
+                    !message.includes("magic") &&
+                    (e.name === "CompileError" || e.name === "TypeError")
+                ) {
+                    e.ruffleIndexError = PanicError.JavascriptConflict;
+                }
             }
+            this.panic(e);
             throw e;
         });
 
@@ -316,8 +326,7 @@ export class RufflePlayer extends HTMLElement {
             this.container,
             this,
             this.allowScriptAccess,
-            config.upgradeToHttps !== false &&
-                window.location.protocol === "https:"
+            config
         );
         console.log("New Ruffle instance created.");
 
@@ -331,11 +340,19 @@ export class RufflePlayer extends HTMLElement {
                     resolve();
                 }, 200);
             });
-            this.container.style.visibility = "visible";
+            this.container.style.visibility = "";
         }
 
-        const autoplay = config.autoplay ?? AutoPlay.Auto;
-        const unmuteVisibility = config.unmuteOverlay ?? UnmuteOverlay.Visible;
+        const autoplay = Object.values(Object(AutoPlay)).includes(
+            config.autoplay
+        )
+            ? config.autoplay
+            : AutoPlay.Auto;
+        const unmuteVisibility = Object.values(Object(UnmuteOverlay)).includes(
+            config.unmuteOverlay
+        )
+            ? config.unmuteOverlay
+            : UnmuteOverlay.Visible;
 
         if (
             autoplay == AutoPlay.On ||
@@ -353,7 +370,7 @@ export class RufflePlayer extends HTMLElement {
                         const style = (<ElementCSSInlineStyle>node).style;
                         style.visibility =
                             unmuteVisibility == UnmuteOverlay.Visible
-                                ? "visible"
+                                ? ""
                                 : "hidden";
                     }
                 });
@@ -389,12 +406,33 @@ export class RufflePlayer extends HTMLElement {
     async load(
         options: string | URLLoadOptions | DataLoadOptions
     ): Promise<void> {
-        if (typeof options == "string") {
-            options = { url: options };
+        let optionsError = "";
+        switch (typeof options) {
+            case "string":
+                options = { url: options };
+                break;
+            case "object":
+                if (options === null) {
+                    optionsError = "Argument 0 must be a string or object";
+                } else if (!("url" in options) && !("data" in options)) {
+                    optionsError =
+                        "Argument 0 must contain a `url` or `data` key";
+                } else if (
+                    "url" in options &&
+                    typeof options.url !== "string"
+                ) {
+                    optionsError = "`url` must be a string";
+                }
+                break;
+            default:
+                optionsError = "Argument 0 must be a string or object";
+                break;
         }
-
-        if (!("url" in options) && !("data" in options)) {
-            throw new TypeError("options must contain url or data");
+        if (optionsError.length > 0) {
+            const error = new TypeError(optionsError);
+            error.ruffleIndexError = PanicError.JavascriptConfiguration;
+            this.panic(error);
+            throw error;
         }
 
         //TODO: Actually stream files...
@@ -406,10 +444,16 @@ export class RufflePlayer extends HTMLElement {
                     ...options,
                 };
 
+                // Pre-emptively set background color of container while Ruffle/SWF loads.
+                if (config.backgroundColor) {
+                    this.container.style.backgroundColor =
+                        config.backgroundColor;
+                }
+
                 await this.ensureFreshInstance(config);
 
                 if ("url" in options) {
-                    console.log("Loading SWF file " + options.url);
+                    console.log(`Loading SWF file ${options.url}`);
                     try {
                         this.swfUrl = new URL(
                             options.url,
@@ -439,8 +483,7 @@ export class RufflePlayer extends HTMLElement {
                 );
             }
         } catch (err) {
-            console.error("Serious error occurred loading SWF file: " + err);
-            this.panic(err);
+            console.error(`Serious error occurred loading SWF file: ${err}`);
             throw err;
         }
     }
@@ -721,67 +764,182 @@ export class RufflePlayer extends HTMLElement {
         }
         this.panicked = true;
 
-        let errorText = "# Error Info\n";
-
-        if (error instanceof Error) {
-            errorText += `Error name: ${error.name}\n`;
-            errorText += `Error message: ${error.message}\n`;
-            if (error.stack) {
-                errorText += `Error stack:\n\`\`\`\n${error.stack}\n\`\`\`\n`;
-            }
-        } else {
-            errorText += `Error: ${error}\n`;
+        if (
+            error instanceof Error &&
+            (error.name === "AbortError" ||
+                error.message.includes("AbortError"))
+        ) {
+            // Firefox: Don't display the panic screen if the user leaves the page while something is still loading
+            return;
         }
 
-        errorText += "\n# Player Info\n";
-        errorText += this.debugPlayerInfo();
+        const errorIndex = error?.ruffleIndexError ?? PanicError.Unknown;
 
-        errorText += "\n# Page Info\n";
-        errorText += `Page URL: ${document.location.href}\n`;
-        if (this.swfUrl) errorText += `SWF URL: ${this.swfUrl}\n`;
+        const errorArray: Array<string | null> & {
+            stackIndex: number;
+        } = Object.assign([], {
+            stackIndex: -1,
+        });
 
-        errorText += "\n# Browser Info\n";
-        errorText += `Useragent: ${window.navigator.userAgent}\n`;
-        errorText += `OS: ${window.navigator.platform}\n`;
+        errorArray.push("# Error Info\n");
 
-        errorText += "\n# Ruffle Info\n";
-        errorText += `Version: %VERSION_NUMBER%\n`;
-        errorText += `Name: %VERSION_NAME%\n`;
-        errorText += `Channel: %VERSION_CHANNEL%\n`;
-        errorText += `Built: %BUILD_DATE%\n`;
-        errorText += `Commit: %COMMIT_HASH%\n`;
+        if (error instanceof Error) {
+            errorArray.push(`Error name: ${error.name}\n`);
+            errorArray.push(`Error message: ${error.message}\n`);
+            if (error.stack) {
+                const stackIndex =
+                    errorArray.push(
+                        `Error stack:\n\`\`\`\n${error.stack}\n\`\`\`\n`
+                    ) - 1;
+                errorArray.stackIndex = stackIndex;
+            }
+        } else {
+            errorArray.push(`Error: ${error}\n`);
+        }
 
-        const issueTitle = `Ruffle Error on ${document.location.href}`;
-        const issueLink =
-            "https://github.com/ruffle-rs/ruffle/issues/new?title=" +
-            encodeURIComponent(issueTitle) +
-            "&body=" +
-            encodeURIComponent(errorText);
+        errorArray.push("\n# Player Info\n");
+        errorArray.push(this.debugPlayerInfo());
+
+        errorArray.push("\n# Page Info\n");
+        errorArray.push(`Page URL: ${document.location.href}\n`);
+        if (this.swfUrl) errorArray.push(`SWF URL: ${this.swfUrl}\n`);
+
+        errorArray.push("\n# Browser Info\n");
+        errorArray.push(`Useragent: ${window.navigator.userAgent}\n`);
+        errorArray.push(`OS: ${window.navigator.platform}\n`);
+
+        errorArray.push("\n# Ruffle Info\n");
+        errorArray.push(`Version: %VERSION_NUMBER%\n`);
+        errorArray.push(`Name: %VERSION_NAME%\n`);
+        errorArray.push(`Channel: %VERSION_CHANNEL%\n`);
+        errorArray.push(`Built: %BUILD_DATE%\n`);
+        errorArray.push(`Commit: %COMMIT_HASH%\n`);
+
+        const errorText = errorArray.join("");
+
+        const issueTitle = `Error on ${document.location.href}`;
+        let issueLink = `https://github.com/ruffle-rs/ruffle/issues/new?title=${encodeURIComponent(
+            issueTitle
+        )}&body=`;
+        let issueBody = encodeURIComponent(errorText);
+        if (
+            errorArray.stackIndex > -1 &&
+            String(issueLink + issueBody).length > 8195
+        ) {
+            // Strip the stack error from the array when the produced URL is way too long.
+            // This should prevent "414 Request-URI Too Large" errors on Github.
+            errorArray[errorArray.stackIndex] = null;
+            issueBody = encodeURIComponent(errorArray.join(""));
+        }
+        issueLink += issueBody;
 
         // Clears out any existing content (ie play button or canvas) and replaces it with the error screen
+        let errorBody, errorFooter;
+        switch (errorIndex) {
+            case PanicError.FileProtocol:
+                // General error: Running on the `file:` protocol
+                errorBody = `
+                    <p>It appears you are running Ruffle on the "file:" protocol.</p>
+                    <p>This doesn't work as browsers block many features from working for security reasons.</p>
+                    <p>Instead, we invite you to setup a local server or either use the web demo or the desktop application.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="${RUFFLE_ORIGIN}/demo">Web Demo</a></li>
+                    <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/tags">Desktop Application</a></li>
+                `;
+                break;
+            case PanicError.JavascriptConfiguration:
+                // General error: Incorrect JavaScript configuration
+                errorBody = `
+                    <p>Ruffle has encountered a major issue due to an incorrect JavaScript configuration.</p>
+                    <p>If you are the server administrator, we invite you to check the error details to find out which parameter is at fault.</p>
+                    <p>You can also consult the Ruffle wiki for help.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#javascript-api">View Ruffle Wiki</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+            case PanicError.WasmNotFound:
+                // Self hosted: Cannot load `.wasm` file - file not found
+                errorBody = `
+                    <p>Ruffle failed to load the required ".wasm" file component.</p>
+                    <p>If you are the server administrator, please ensure the file has correctly been uploaded.</p>
+                    <p>If the issue persists, you may need to use the "publicPath" setting: please consult the Ruffle wiki for help.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#configuration-options">View Ruffle Wiki</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+            case PanicError.WasmMimeType:
+                // Self hosted: Cannot load `.wasm` file - incorrect MIME type
+                errorBody = `
+                    <p>Ruffle has encountered a major issue whilst trying to initialize.</p>
+                    <p>This web server is not serving ".wasm" files with the correct MIME type.</p>
+                    <p>If you are the server administrator, please consult the Ruffle wiki for help.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#configure-webassembly-mime-type">View Ruffle Wiki</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+            case PanicError.WasmCors:
+                // Self hosted: Cannot load `.wasm` file - CORS issues
+                errorBody = `
+                    <p>Ruffle failed to load the required ".wasm" file component.</p>
+                    <p>Access to fetch has likely been blocked by CORS policy.</p>
+                    <p>If you are the server administrator, please consult the Ruffle wiki for help.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#web">View Ruffle Wiki</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+            case PanicError.JavascriptConflict:
+                // Self hosted: Cannot load `.wasm` file - a native object / function is overriden
+                errorBody = `
+                    <p>Ruffle has encountered a major issue whilst trying to initialize.</p>
+                    <p>It seems like this page uses JavaScript code that conflicts with Ruffle.</p>
+                    <p>If you are the server administrator, we invite you to try loading the file on a blank page.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="${issueLink}">Report Bug</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+            default:
+                // Unknown error
+                errorBody = `
+                    <p>Ruffle has encountered a major issue whilst trying to display this Flash content.</p>
+                    <p>This isn't supposed to happen, so we'd really appreciate if you could file a bug!</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="${issueLink}">Report Bug</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+        }
         this.container.innerHTML = `
             <div id="panic">
                 <div id="panic-title">Something went wrong :(</div>
-                <div id="panic-body">
-                    <p>Ruffle has encountered a major issue whilst trying to display this Flash content.</p>
-                    <p>This isn't supposed to happen, so we'd really appreciate if you could file a bug!</p>
-                </div>
+                <div id="panic-body">${errorBody}</div>
                 <div id="panic-footer">
-                    <ul>
-                        <li><a href=${issueLink}>Report Bug</a></li>
-                        <li><a href="#" id="panic-view-details">View Error Details</a></li>
-                    </ul>
+                    <ul>${errorFooter}</ul>
                 </div>
             </div>
         `;
-        (<HTMLLinkElement>(
+        const viewDetails = <HTMLLinkElement>(
             this.container.querySelector("#panic-view-details")
-        )).onclick = () => {
-            this.container.querySelector(
-                "#panic-body"
-            )!.innerHTML = `<textarea>${errorText}</textarea>`;
-            return false;
-        };
+        );
+        if (viewDetails) {
+            viewDetails.onclick = () => {
+                this.container.querySelector(
+                    "#panic-body"
+                )!.innerHTML = `<textarea>${errorText}</textarea>`;
+                return false;
+            };
+        }
 
         // Do this last, just in case it causes any cascading issues.
         if (this.instance) {

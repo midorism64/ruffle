@@ -53,13 +53,8 @@ where
             audio: &mut NullAudioBackend::new(),
             input: &mut NullInputBackend::new(),
             action_queue: &mut ActionQueue::new(),
-            background_color: &mut Color {
-                r: 0,
-                g: 0,
-                b: 0,
-                a: 0,
-            },
-            library: &mut Library::default(),
+            background_color: &mut None,
+            library: &mut Library::empty(gc_context),
             navigator: &mut NullNavigatorBackend::new(),
             renderer: &mut NullRenderer::new(),
             locale: &mut NullLocaleBackend::new(),
@@ -131,11 +126,7 @@ macro_rules! test_method {
                         let function = object.get($name, activation)?;
 
                         $(
-                            #[allow(unused_mut)]
-                            let mut args: Vec<Value> = Vec::new();
-                            $(
-                                args.push($arg.into());
-                            )*
+                            let args: Vec<Value> = vec![$($arg.into()),*];
                             assert_eq!(function.call($name, activation, object, None, &args)?, $out.into(), "{:?} => {:?} in swf {}", args, $out, version);
                         )*
 

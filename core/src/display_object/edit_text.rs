@@ -152,10 +152,12 @@ impl<'gc> EditText<'gc> {
         let document = XMLDocument::new(context.gc_context);
         let text = swf_tag.initial_text.clone().unwrap_or_default();
         let default_format = TextFormat::from_swf_tag(swf_tag.clone(), swf_movie.clone(), context);
+        let encoding = swf_movie.encoding();
 
         let mut text_spans = FormatSpans::new();
         text_spans.set_default_format(default_format.clone());
 
+        let text = text.to_str_lossy(encoding);
         if is_html {
             let _ = document
                 .as_node()
@@ -192,7 +194,7 @@ impl<'gc> EditText<'gc> {
         base.matrix_mut(context.gc_context).ty = bounds.y_min;
 
         let variable = if !swf_tag.variable_name.is_empty() {
-            Some(swf_tag.variable_name.clone())
+            Some(swf_tag.variable_name)
         } else {
             None
         };
@@ -207,7 +209,30 @@ impl<'gc> EditText<'gc> {
                     context.gc_context,
                     EditTextStatic {
                         swf: swf_movie,
-                        text: swf_tag,
+                        text: EditTextStaticData {
+                            id: swf_tag.id,
+                            bounds: swf_tag.bounds,
+                            font_id: swf_tag.font_id,
+                            font_class_name: swf_tag
+                                .font_class_name
+                                .map(|s| s.to_string_lossy(encoding)),
+                            height: swf_tag.height,
+                            color: swf_tag.color.clone(),
+                            max_length: swf_tag.max_length,
+                            layout: swf_tag.layout.clone(),
+                            variable_name: swf_tag.variable_name.to_string_lossy(encoding),
+                            initial_text: swf_tag.initial_text.map(|s| s.to_string_lossy(encoding)),
+                            is_word_wrap: swf_tag.is_word_wrap,
+                            is_multiline: swf_tag.is_multiline,
+                            is_password: swf_tag.is_password,
+                            is_read_only: swf_tag.is_read_only,
+                            is_auto_size: swf_tag.is_auto_size,
+                            is_selectable: swf_tag.is_selectable,
+                            has_border: swf_tag.has_border,
+                            was_static: swf_tag.was_static,
+                            is_html: swf_tag.is_html,
+                            is_device_font: swf_tag.is_device_font,
+                        },
                     },
                 ),
                 is_multiline,
@@ -225,7 +250,7 @@ impl<'gc> EditText<'gc> {
                 intrinsic_bounds,
                 bounds,
                 autosize: AutoSizeMode::None,
-                variable,
+                variable: variable.map(|s| s.to_string_lossy(encoding)),
                 bound_stage_object: None,
                 firing_variable_binding: false,
                 selection: None,
@@ -272,7 +297,7 @@ impl<'gc> EditText<'gc> {
                 indent: Twips::from_pixels(0.0),
                 leading: Twips::from_pixels(0.0),
             }),
-            variable_name: "".to_string(), //TODO: should be null
+            variable_name: "".into(), //TODO: should be null
             initial_text: None,
             is_word_wrap: false,
             is_multiline: false,
@@ -1126,7 +1151,42 @@ impl<'gc> EditText<'gc> {
                     self.into(),
                 );
                 self.propagate_text_binding(&mut activation);
+                self.on_changed(&mut activation);
             }
+        }
+    }
+
+    fn initialize_as_broadcaster(&self, activation: &mut Activation<'_, 'gc, '_>) {
+        let write = self.0.write(activation.context.gc_context);
+        if let Some(object) = write.object {
+            activation.context.avm1.broadcaster_functions().initialize(
+                activation.context.gc_context,
+                object,
+                activation.context.avm1.prototypes().array,
+            );
+
+            if let Ok(Value::Object(listeners)) = object.get("_listeners", activation) {
+                if listeners.length() == 0 {
+                    // Add the TextField as its own listener to match Flash's behavior
+                    // This makes it so that the TextField's handlers are called before other listeners'.
+                    listeners.set_array_element(0, object.into(), activation.context.gc_context);
+                } else {
+                    log::warn!(
+                        "_listeners should be empty, but its length is {}",
+                        listeners.length()
+                    );
+                }
+            }
+        }
+    }
+
+    fn on_changed(&self, activation: &mut Activation<'_, 'gc, '_>) {
+        if let Some(object) = self.0.read().object {
+            let _ = object.call_method(
+                "broadcastMessage",
+                &["onChanged".into(), object.into()],
+                activation,
+            );
         }
     }
 }
@@ -1184,17 +1244,19 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         }
         drop(text);
 
-        // If this text field has a variable set, initialize text field binding.
         Avm1::run_with_stack_frame_for_display_object(
             (*self).into(),
             context.swf.version(),
             context,
             |activation| {
+                // If this text field has a variable set, initialize text field binding.
                 if !self.try_bind_text_field_variable(activation, true) {
                     activation.context.unbound_text_fields.push(*self);
                 }
                 // People can bind to properties of TextFields the same as other display objects.
                 self.bind_text_field_variables(activation);
+
+                self.initialize_as_broadcaster(activation);
             },
         );
 
@@ -1498,15 +1560,37 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
 }
 
 /// Static data shared between all instances of a text object.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Collect)]
+#[collect(no_drop)]
 struct EditTextStatic {
     swf: Arc<SwfMovie>,
-    text: swf::EditText,
+    text: EditTextStaticData,
+}
+#[derive(Debug, Clone)]
+struct EditTextStaticData {
+    id: CharacterId,
+    bounds: swf::Rectangle,
+    font_id: Option<CharacterId>, // TODO(Herschel): Combine with height
+    font_class_name: Option<String>,
+    height: Option<Twips>,
+    color: Option<Color>,
+    max_length: Option<u16>,
+    layout: Option<swf::TextLayout>,
+    variable_name: String,
+    initial_text: Option<String>,
+    is_word_wrap: bool,
+    is_multiline: bool,
+    is_password: bool,
+    is_read_only: bool,
+    is_auto_size: bool,
+    is_selectable: bool,
+    has_border: bool,
+    was_static: bool,
+    is_html: bool,
+    is_device_font: bool,
 }
 
-unsafe impl<'gc> gc_arena::Collect for EditTextStatic {
-    #[inline]
+unsafe impl<'gc> Collect for EditTextStaticData {
     fn needs_trace() -> bool {
         false
     }

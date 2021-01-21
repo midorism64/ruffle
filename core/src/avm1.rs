@@ -18,6 +18,7 @@ mod callable_value;
 pub mod debug;
 pub mod error;
 mod fscommand;
+#[macro_use]
 pub mod function;
 pub mod globals;
 pub mod object;
@@ -434,6 +435,10 @@ impl<'gc> Avm1<'gc> {
 
     pub fn set_max_recursion_depth(&mut self, max_recursion_depth: u16) {
         self.max_recursion_depth = max_recursion_depth
+    }
+
+    pub fn broadcaster_functions(&self) -> BroadcasterFunctions<'gc> {
+        self.broadcaster_functions
     }
 
     #[cfg(feature = "avm_debug")]

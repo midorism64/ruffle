@@ -29,7 +29,7 @@ pub fn constructor<'gc>(
     );
     listeners.set_array_element(0, Value::Object(this), activation.context.gc_context);
 
-    Ok(Value::Undefined)
+    Ok(this.into())
 }
 
 pub fn load_clip<'gc>(
@@ -107,7 +107,7 @@ pub fn get_progress<'gc>(
                 "bytesLoaded",
                 movieclip
                     .movie()
-                    .map(|mv| (mv.data().len() + 21).into())
+                    .map(|mv| (mv.header().uncompressed_length).into())
                     .unwrap_or(Value::Undefined),
                 EnumSet::empty(),
             );
@@ -116,7 +116,7 @@ pub fn get_progress<'gc>(
                 "bytesTotal",
                 movieclip
                     .movie()
-                    .map(|mv| (mv.data().len() + 21).into())
+                    .map(|mv| (mv.header().uncompressed_length).into())
                     .unwrap_or(Value::Undefined),
                 EnumSet::empty(),
             );

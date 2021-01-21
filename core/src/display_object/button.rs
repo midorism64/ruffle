@@ -39,8 +39,9 @@ impl<'gc> Button<'gc> {
     ) -> Self {
         let mut actions = vec![];
         for action in &button.actions {
-            let action_data =
-                source_movie.owned_subslice(action.action_data.clone(), &source_movie.movie);
+            let action_data = source_movie
+                .to_unbounded_subslice(action.action_data)
+                .unwrap();
             for condition in &action.conditions {
                 let button_action = ButtonAction {
                     action_data: action_data.clone(),
@@ -117,10 +118,13 @@ impl<'gc> Button<'gc> {
     /// This function instantiates children and thus must not be called whilst
     /// the caller is holding a write lock on the button data.
     fn set_state(
-        self,
+        mut self,
         context: &mut crate::context::UpdateContext<'_, 'gc, '_>,
         state: ButtonState,
     ) {
+        let mut removed_depths: fnv::FnvHashSet<_> =
+            self.iter_render_list().map(|o| o.depth()).collect();
+
         let movie = self.movie().unwrap();
         let mut write = self.0.write(context.gc_context);
         write.state = state;
@@ -129,33 +133,60 @@ impl<'gc> Button<'gc> {
             ButtonState::Over => swf::ButtonState::Over,
             ButtonState::Down => swf::ButtonState::Down,
         };
-        write.container.clear(context.gc_context);
 
-        let mut new_children = Vec::new();
+        // Create any new children that exist in this state, and remove children
+        // that only exist in the previous state.
+        // Children that exist in both states should persist and not be recreated.
+        // TODO: This behavior probably differs in AVM2 (I suspect they always get recreated).
+        let mut children = Vec::new();
+
         for record in &write.static_data.read().records {
             if record.states.contains(&swf_state) {
-                if let Ok(child) = context
-                    .library
-                    .library_for_movie_mut(movie.clone())
-                    .instantiate_by_id(record.id, context.gc_context)
-                {
-                    child.set_parent(context.gc_context, Some(self.into()));
-                    child.set_matrix(context.gc_context, &record.matrix);
-                    child.set_color_transform(
-                        context.gc_context,
-                        &record.color_transform.clone().into(),
-                    );
-                    child.set_depth(context.gc_context, record.depth.into());
+                // State contains this depth, so we don't have to remove it.
+                removed_depths.remove(&record.depth.into());
 
-                    new_children.push((child, record.depth));
-                }
+                let child = match write.container.get_depth(record.depth.into()) {
+                    // Re-use existing child.
+                    Some(child) if child.id() == record.id => child,
+
+                    // Instantiate new child.
+                    _ => {
+                        if let Ok(child) = context
+                            .library
+                            .library_for_movie_mut(movie.clone())
+                            .instantiate_by_id(record.id, context.gc_context)
+                        {
+                            // New child that did not previously exist, create it.
+                            child.set_parent(context.gc_context, Some(self.into()));
+                            child.set_depth(context.gc_context, record.depth.into());
+
+                            children.push((child, record.depth));
+                            child
+                        } else {
+                            continue;
+                        }
+                    }
+                };
+
+                // Set transform of child (and modify previous child if it already existed)
+                child.set_matrix(context.gc_context, &record.matrix);
+                child.set_color_transform(
+                    context.gc_context,
+                    &record.color_transform.clone().into(),
+                );
+            }
+        }
+        drop(write);
+
+        // Kill children that no longer exist in this state.
+        for depth in removed_depths {
+            if let Some(child) = self.child_by_depth(depth) {
+                self.remove_child(context, child, EnumSet::all());
             }
         }
 
-        drop(write);
-
-        for (child, depth) in new_children {
-            // Initialize child.
+        for (child, depth) in children {
+            // Initialize new child.
             child.post_instantiation(context, child, None, Instantiator::Movie, false);
             child.run_frame(context);
             self.replace_at_depth(context, child, depth.into());
@@ -301,6 +332,13 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
     ) -> Option<DisplayObject<'gc>> {
         // The button is hovered if the mouse is over any child nodes.
         if self.visible() {
+            for child in self.iter_render_list().rev() {
+                let result = child.mouse_pick(context, child, point);
+                if result.is_some() {
+                    return result;
+                }
+            }
+
             for child in self.0.read().hit_area.values() {
                 if child.hit_test_shape(context, point) {
                     return Some(self_node);

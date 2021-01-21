@@ -1,8 +1,8 @@
 #![allow(
-    clippy::manual_range_contains,
-    clippy::unneeded_field_pattern,
-    clippy::same_item_push,
+    renamed_and_removed_lints,
     clippy::unknown_clippy_lints,
+    clippy::manual_range_contains,
+    clippy::same_item_push,
     clippy::unnecessary_wraps
 )]
 
@@ -43,6 +43,7 @@ mod vminterface;
 mod xml;
 
 pub mod backend;
+pub mod config;
 pub mod external;
 
 pub use chrono;

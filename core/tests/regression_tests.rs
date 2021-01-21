@@ -1,6 +1,6 @@
 //! Tests running SWFs in a headless Ruffle instance.
 //!
-//! Trace output can be compared with correct output from the official Flash Payer.
+//! Trace output can be compared with correct output from the official Flash Player.
 
 use approx::assert_relative_eq;
 use ruffle_core::backend::locale::NullLocaleBackend;
@@ -88,12 +88,14 @@ swf_tests! {
     (execution_order1, "avm1/execution_order1", 3),
     (execution_order2, "avm1/execution_order2", 15),
     (execution_order3, "avm1/execution_order3", 5),
+    (export_assets, "avm1/export_assets", 1),
     (single_frame, "avm1/single_frame", 2),
     (looping, "avm1/looping", 6),
     (matrix, "avm1/matrix", 1),
     (point, "avm1/point", 1),
     (rectangle, "avm1/rectangle", 1),
     (date_is_special, "avm1/date_is_special", 1),
+    (get_bytes_total, "avm1/get_bytes_total", 1),
     (goto_advance1, "avm1/goto_advance1", 2),
     (goto_advance2, "avm1/goto_advance2", 2),
     (goto_both_ways1, "avm1/goto_both_ways1", 2),
@@ -162,6 +164,8 @@ swf_tests! {
     (escape, "avm1/escape", 1),
     (unescape, "avm1/unescape", 1),
     (register_class, "avm1/register_class", 1),
+    (register_class_return_value, "avm1/register_class_return_value", 1),
+    (register_class_swf6, "avm1/register_class_swf6", 1),
     (register_and_init_order, "avm1/register_and_init_order", 1),
     (on_construct, "avm1/on_construct", 1),
     (set_variable_scope, "avm1/set_variable_scope", 1),
@@ -210,6 +214,7 @@ swf_tests! {
     (loadmovienum, "avm1/loadmovienum", 2),
     (loadmovie_registerclass, "avm1/loadmovie_registerclass", 2),
     (loadmovie_method, "avm1/loadmovie_method", 2),
+    (loadmovie_fail, "avm1/loadmovie_fail", 1),
     (unloadmovie, "avm1/unloadmovie", 11),
     (unloadmovienum, "avm1/unloadmovienum", 11),
     (unloadmovie_method, "avm1/unloadmovie_method", 11),
@@ -226,6 +231,7 @@ swf_tests! {
     #[ignore] (watch_virtual_property, "avm1/watch_virtual_property", 1),
     (cross_movie_root, "avm1/cross_movie_root", 5),
     (roots_and_levels, "avm1/roots_and_levels", 1),
+    (swf5_encoding, "avm1/swf5_encoding", 1),
     (swf6_case_insensitive, "avm1/swf6_case_insensitive", 1),
     (swf7_case_sensitive, "avm1/swf7_case_sensitive", 1),
     (prototype_enumerate, "avm1/prototype_enumerate", 1),
@@ -272,6 +278,7 @@ swf_tests! {
     (global_array, "avm1/global_array", 1),
     (array_constructor, "avm1/array_constructor", 1),
     (array_apply, "avm1/array_constructor", 1),
+    (object_constructor, "avm1/object_constructor", 1),
     (object_function, "avm1/object_function", 1),
     (parse_int, "avm1/parse_int", 1),
     (bitmap_filter, "avm1/bitmap_filter", 1),
@@ -302,6 +309,8 @@ swf_tests! {
     (color_matrix_filter, "avm1/color_matrix_filter", 1),
     (displacement_map_filter, "avm1/displacement_map_filter", 1),
     (convolution_filter, "avm1/convolution_filter", 1),
+    (gradient_bevel_filter, "avm1/gradient_bevel_filter", 1),
+    (gradient_glow_filter, "avm1/gradient_glow_filter", 1),
     (bitmap_data, "avm1/bitmap_data", 1),
     (array_call_method, "avm1/array_call_method", 1),
     (as3_hello_world, "avm2/hello_world", 1),
@@ -364,7 +373,7 @@ swf_tests! {
     (button_children, "avm1/button_children", 1),
     (transform, "avm1/transform", 1),
     (target_path, "avm1/target_path", 1),
-    (remove_movie_clip, "avm1/remove_movie_clip", 1),
+    (remove_movie_clip, "avm1/remove_movie_clip", 2),
     (as3_add, "avm2/add", 1),
     (as3_bitand, "avm2/bitand", 1),
     (as3_bitnot, "avm2/bitnot", 1),

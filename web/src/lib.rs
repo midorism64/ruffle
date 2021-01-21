@@ -1,4 +1,8 @@
-#![allow(clippy::same_item_push, clippy::unknown_clippy_lints)]
+#![allow(
+    renamed_and_removed_lints,
+    clippy::same_item_push,
+    clippy::unknown_clippy_lints
+)]
 
 //! Ruffle web frontend.
 mod audio;
@@ -21,6 +25,7 @@ use ruffle_core::backend::input::InputBackend;
 use ruffle_core::backend::render::RenderBackend;
 use ruffle_core::backend::storage::MemoryStorageBackend;
 use ruffle_core::backend::storage::StorageBackend;
+use ruffle_core::config::Letterbox;
 use ruffle_core::context::UpdateContext;
 use ruffle_core::events::{KeyCode, MouseWheelDelta};
 use ruffle_core::external::{
@@ -28,8 +33,9 @@ use ruffle_core::external::{
 };
 use ruffle_core::property_map::PropertyMap;
 use ruffle_core::tag_utils::SwfMovie;
-use ruffle_core::PlayerEvent;
+use ruffle_core::{Color, PlayerEvent};
 use ruffle_web_common::JsResult;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
@@ -66,9 +72,9 @@ struct RuffleInstance {
     #[allow(dead_code)]
     mouse_move_callback: Option<Closure<dyn FnMut(PointerEvent)>>,
     mouse_down_callback: Option<Closure<dyn FnMut(PointerEvent)>>,
-    mouse_up_callback: Option<Closure<dyn FnMut(PointerEvent)>>,
     player_mouse_down_callback: Option<Closure<dyn FnMut(PointerEvent)>>,
     window_mouse_down_callback: Option<Closure<dyn FnMut(PointerEvent)>>,
+    mouse_up_callback: Option<Closure<dyn FnMut(PointerEvent)>>,
     mouse_wheel_callback: Option<Closure<dyn FnMut(WheelEvent)>>,
     key_down_callback: Option<Closure<dyn FnMut(KeyboardEvent)>>,
     key_up_callback: Option<Closure<dyn FnMut(KeyboardEvent)>>,
@@ -100,10 +106,43 @@ extern "C" {
 
     #[wasm_bindgen(method, js_name = "displayMessage")]
     fn display_message(this: &JavascriptPlayer, message: &str);
+
+    #[wasm_bindgen(method, getter, js_name = "isFullscreen")]
+    fn is_fullscreen(this: &JavascriptPlayer) -> bool;
 }
 
 struct JavascriptInterface {
     js_player: JavascriptPlayer,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(default = "Default::default")]
+pub struct Config {
+    #[serde(rename = "backgroundColor")]
+    background_color: Option<String>,
+
+    letterbox: Letterbox,
+
+    #[serde(rename = "upgradeToHttps")]
+    upgrade_to_https: bool,
+
+    #[serde(rename = "warnOnUnsupportedContent")]
+    warn_on_unsupported_content: bool,
+
+    #[serde(rename = "logLevel")]
+    log_level: log::Level,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            background_color: Default::default(),
+            letterbox: Default::default(),
+            upgrade_to_https: true,
+            warn_on_unsupported_content: true,
+            log_level: log::Level::Error,
+        }
+    }
 }
 
 /// An opaque handle to a `RuffleInstance` inside the pool.
@@ -120,7 +159,7 @@ impl Ruffle {
         parent: HtmlElement,
         js_player: JavascriptPlayer,
         allow_script_access: bool,
-        upgrade_to_https: bool,
+        config: &JsValue,
     ) -> Result<Ruffle, JsValue> {
         if RUFFLE_GLOBAL_PANIC.is_completed() {
             // If an actual panic happened, then we can't trust the state it left us in.
@@ -128,7 +167,10 @@ impl Ruffle {
             return Err("Ruffle is panicking!".into());
         }
         set_panic_handler();
-        Ruffle::new_internal(parent, js_player, allow_script_access, upgrade_to_https)
+
+        let config: Config = config.into_serde().unwrap_or_default();
+
+        Ruffle::new_internal(parent, js_player, allow_script_access, config)
             .map_err(|_| "Error creating player".into())
     }
 
@@ -205,21 +247,102 @@ impl Ruffle {
             let mut instance = instance.borrow_mut();
             instance.canvas.remove();
 
-            // Stop all audio playing from the instance
+            // Stop all audio playing from the instance.
             let mut player = instance.core.lock().unwrap();
             player.audio_mut().stop_all_sounds();
             player.flush_shared_objects();
             drop(player);
 
             // Clean up all event listeners.
-            instance.key_down_callback = None;
-            instance.key_up_callback = None;
-            instance.mouse_down_callback = None;
-            instance.mouse_move_callback = None;
-            instance.mouse_up_callback = None;
-            instance.player_mouse_down_callback = None;
-            instance.window_mouse_down_callback = None;
-            instance.unload_callback = None;
+            if let Some(window) = web_sys::window() {
+                if let Some(mouse_move_callback) = &instance.mouse_move_callback {
+                    let canvas_events: &EventTarget = instance.canvas.as_ref();
+                    canvas_events
+                        .remove_event_listener_with_callback(
+                            "pointermove",
+                            mouse_move_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.mouse_move_callback = None;
+                }
+                if let Some(mouse_down_callback) = &instance.mouse_down_callback {
+                    let canvas_events: &EventTarget = instance.canvas.as_ref();
+                    canvas_events
+                        .remove_event_listener_with_callback(
+                            "pointerdown",
+                            mouse_down_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.mouse_down_callback = None;
+                }
+                if let Some(player_mouse_down_callback) = &instance.player_mouse_down_callback {
+                    let js_player_events: &EventTarget = instance.js_player.as_ref();
+                    js_player_events
+                        .remove_event_listener_with_callback(
+                            "pointerdown",
+                            player_mouse_down_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.player_mouse_down_callback = None;
+                }
+                if let Some(window_mouse_down_callback) = &instance.window_mouse_down_callback {
+                    window
+                        .remove_event_listener_with_callback_and_bool(
+                            "pointerdown",
+                            window_mouse_down_callback.as_ref().unchecked_ref(),
+                            true,
+                        )
+                        .unwrap();
+                    instance.window_mouse_down_callback = None;
+                }
+                if let Some(mouse_up_callback) = &instance.mouse_up_callback {
+                    let canvas_events: &EventTarget = instance.canvas.as_ref();
+                    canvas_events
+                        .remove_event_listener_with_callback(
+                            "pointerup",
+                            mouse_up_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.mouse_up_callback = None;
+                }
+                if let Some(mouse_wheel_callback) = &instance.mouse_wheel_callback {
+                    let canvas_events: &EventTarget = instance.canvas.as_ref();
+                    canvas_events
+                        .remove_event_listener_with_callback(
+                            "wheel",
+                            mouse_wheel_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.mouse_wheel_callback = None;
+                }
+                if let Some(key_down_callback) = &instance.key_down_callback {
+                    window
+                        .remove_event_listener_with_callback(
+                            "keydown",
+                            key_down_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.key_down_callback = None;
+                }
+                if let Some(key_up_callback) = &instance.key_up_callback {
+                    window
+                        .remove_event_listener_with_callback(
+                            "keyup",
+                            key_up_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.key_up_callback = None;
+                }
+                if let Some(unload_callback) = &instance.unload_callback {
+                    window
+                        .remove_event_listener_with_callback(
+                            "unload",
+                            unload_callback.as_ref().unchecked_ref(),
+                        )
+                        .unwrap();
+                    instance.unload_callback = None;
+                }
+            }
 
             // Cancel the animation handler, if it's still active.
             if let Some(id) = instance.animation_handler_id {
@@ -294,9 +417,9 @@ impl Ruffle {
         parent: HtmlElement,
         js_player: JavascriptPlayer,
         allow_script_access: bool,
-        upgrade_to_https: bool,
+        config: Config,
     ) -> Result<Ruffle, Box<dyn Error>> {
-        let _ = console_log::init_with_level(log::Level::Trace);
+        let _ = console_log::init_with_level(config.log_level);
 
         let window = web_sys::window().ok_or("Expected window")?;
         let document = window.document().ok_or("Expected document")?;
@@ -307,7 +430,10 @@ impl Ruffle {
             .into_js_result()?;
 
         let audio = Box::new(WebAudioBackend::new()?);
-        let navigator = Box::new(WebNavigatorBackend::new(upgrade_to_https));
+        let navigator = Box::new(WebNavigatorBackend::new(
+            allow_script_access,
+            config.upgrade_to_https,
+        ));
         let input = Box::new(WebInputBackend::new(&canvas));
         let locale = Box::new(WebLocaleBackend::new());
 
@@ -332,6 +458,14 @@ impl Ruffle {
             log,
             user_interface,
         )?;
+        {
+            let mut core = core.lock().unwrap();
+            if let Some(color) = config.background_color.and_then(parse_html_color) {
+                core.set_background_color(Some(color));
+            }
+            core.set_letterbox(config.letterbox);
+            core.set_warn_on_unsupported_content(config.warn_on_unsupported_content);
+        }
 
         // Create instance.
         let instance = RuffleInstance {
@@ -630,6 +764,7 @@ impl Ruffle {
                 instance.borrow_mut().key_down_callback = Some(key_down_callback);
             }
 
+            // Create keyup event handler.
             {
                 let key_up_callback = Closure::wrap(Box::new(move |js_event: KeyboardEvent| {
                     js_event.prevent_default();
@@ -996,4 +1131,30 @@ fn populate_movie_parameters(input: &JsValue, output: &mut PropertyMap<String>) 
             }
         }
     }
+}
+
+fn parse_html_color(color: impl AsRef<str>) -> Option<Color> {
+    // Parse classic HTML hex color (XXXXXX or #XXXXXX), attempting to match browser behavior.
+    // Optional leading #.
+    let mut color = color.as_ref();
+    color = color.strip_prefix('#').unwrap_or(color);
+
+    // Fail if less than 6 digits.
+    if color.len() < 6 {
+        return None;
+    }
+
+    // Each char represents 4-bits. Invalid hex digit is allowed (converts to 0).
+    let mut ret: u32 = 0;
+    for c in color[..6].bytes() {
+        let digit = match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0,
+        };
+        ret <<= 4;
+        ret |= u32::from(digit);
+    }
+    Some(Color::from_rgb(ret, 255))
 }

@@ -1,5 +1,3 @@
-#![allow(clippy::unneeded_field_pattern)]
-
 mod audio;
 mod custom_event;
 mod executor;
@@ -16,6 +14,7 @@ use clap::Clap;
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient};
 use ruffle_core::{
     backend::audio::{AudioBackend, NullAudioBackend},
+    config::Letterbox,
     Player,
 };
 use ruffle_render_wgpu::WgpuRenderBackend;
@@ -32,9 +31,11 @@ use ruffle_render_wgpu::clap::{GraphicsBackend, PowerPreference};
 use std::io::Read;
 use std::rc::Rc;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
+};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::{Icon, WindowBuilder};
+use winit::window::{Fullscreen, Icon, WindowBuilder};
 
 #[derive(Clap, Debug)]
 #[clap(
@@ -194,10 +195,11 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
         WindowBuilder::new()
             .with_title(format!("Ruffle - {}", window_title))
             .with_window_icon(Some(icon))
-            .with_inner_size(movie_size)
+            .with_max_inner_size(LogicalSize::new(i16::MAX, i16::MAX))
             .build(&event_loop)?,
     );
-    let viewport_size = movie_size.to_physical(window.scale_factor());
+    window.set_inner_size(movie_size);
+    let viewport_size = window.inner_size();
 
     let audio: Box<dyn AudioBackend> = match audio::CpalAudioBackend::new() {
         Ok(audio) => Box::new(audio),
@@ -223,7 +225,7 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
     )); //TODO: actually implement this backend type
     let input = Box::new(input::WinitInputBackend::new(window.clone()));
     let storage = Box::new(DiskStorageBackend::new());
-    let user_interface = Box::new(ui::DesktopUiBackend::new());
+    let user_interface = Box::new(ui::DesktopUiBackend::new(window.clone()));
     let locale = Box::new(locale::DesktopLocaleBackend::new());
     let player = Player::new(
         renderer,
@@ -235,21 +237,24 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
         Box::new(NullLogBackend::new()),
         user_interface,
     )?;
-    player.lock().unwrap().set_root_movie(Arc::new(movie));
-    player.lock().unwrap().set_is_playing(true); // Desktop player will auto-play.
-
-    player
-        .lock()
-        .unwrap()
-        .set_viewport_dimensions(viewport_size.width, viewport_size.height);
+    {
+        let mut player = player.lock().unwrap();
+        player.set_root_movie(Arc::new(movie));
+        player.set_is_playing(true); // Desktop player will auto-play.
+        player.set_letterbox(Letterbox::On);
+        player.set_viewport_dimensions(viewport_size.width, viewport_size.height);
+    }
 
     let mut mouse_pos = PhysicalPosition::new(0.0, 0.0);
     let mut time = Instant::now();
     let mut next_frame_time = Instant::now();
     let mut minimized = false;
+    let mut fullscreen_down = false;
     loop {
         // Poll UI events
         event_loop.run(move |event, _window_target, control_flow| {
+            // Allow KeyboardInput.modifiers (ModifiersChanged event not functional yet).
+            #[allow(deprecated)]
             match event {
                 winit::event::Event::LoopDestroyed => {
                     player.lock().unwrap().flush_shared_objects();
@@ -346,6 +351,46 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Pressed,
+                                virtual_keycode: Some(VirtualKeyCode::Return),
+                                modifiers, // TODO: Use WindowEvent::ModifiersChanged.
+                                ..
+                            },
+                        ..
+                    } if modifiers.alt() => {
+                        if !fullscreen_down {
+                            window.set_fullscreen(match window.fullscreen() {
+                                None => Some(Fullscreen::Borderless(None)),
+                                Some(_) => None,
+                            });
+                        }
+                        fullscreen_down = true;
+                    }
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Released,
+                                virtual_keycode: Some(VirtualKeyCode::Return),
+                                ..
+                            },
+                        ..
+                    } if fullscreen_down => {
+                        fullscreen_down = false;
+                    }
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Pressed,
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => {
+                        window.set_fullscreen(None);
+                    }
                     WindowEvent::KeyboardInput { .. } | WindowEvent::ReceivedCharacter(_) => {
                         let mut player_lock = player.lock().unwrap();
                         if let Some(event) = player_lock
