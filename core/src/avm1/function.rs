@@ -3,13 +3,12 @@
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::object::super_object::SuperObject;
-use crate::avm1::property::{Attribute, Attribute::*};
+use crate::avm1::property::Attribute;
 use crate::avm1::scope::Scope;
 use crate::avm1::value::Value;
 use crate::avm1::{Object, ObjectPtr, ScriptObject, TObject};
 use crate::display_object::{DisplayObject, TDisplayObject};
 use crate::tag_utils::SwfSlice;
-use enumset::EnumSet;
 use gc_arena::{Collect, CollectionContext, Gc, GcCell, MutationContext};
 use std::borrow::Cow;
 use std::fmt;
@@ -78,7 +77,7 @@ pub struct Avm1Function<'gc> {
     scope: GcCell<'gc, Scope<'gc>>,
 
     /// The constant pool the function executes with.
-    constant_pool: GcCell<'gc, Vec<String>>,
+    constant_pool: GcCell<'gc, Vec<Value<'gc>>>,
 
     /// The base movie clip that the function was defined on.
     /// This is the movie clip that contains the bytecode.
@@ -96,7 +95,7 @@ impl<'gc> Avm1Function<'gc> {
         name: &str,
         params: &[&'_ SwfStr],
         scope: GcCell<'gc, Scope<'gc>>,
-        constant_pool: GcCell<'gc, Vec<String>>,
+        constant_pool: GcCell<'gc, Vec<Value<'gc>>>,
         base_clip: DisplayObject<'gc>,
     ) -> Self {
         let name = if name.is_empty() {
@@ -140,7 +139,7 @@ impl<'gc> Avm1Function<'gc> {
         actions: SwfSlice,
         swf_function: &swf::avm1::types::Function,
         scope: GcCell<'gc, Scope<'gc>>,
-        constant_pool: GcCell<'gc, Vec<String>>,
+        constant_pool: GcCell<'gc, Vec<Value<'gc>>>,
         base_clip: DisplayObject<'gc>,
     ) -> Self {
         let name = if swf_function.name.is_empty() {
@@ -269,21 +268,21 @@ impl<'gc> Executable<'gc> {
                     activation.context.gc_context,
                     "callee",
                     callee.into(),
-                    DontEnum.into(),
+                    Attribute::DONT_ENUM,
                 );
                 // The caller is the previous callee.
                 arguments.define_value(
                     activation.context.gc_context,
                     "caller",
                     activation.callee.map(Value::from).unwrap_or(Value::Null),
-                    DontEnum.into(),
+                    Attribute::DONT_ENUM,
                 );
 
                 if !af.suppress_arguments {
                     for i in 0..args.len() {
                         arguments.set_array_element(
                             i,
-                            args.get(i).unwrap().clone(),
+                            *args.get(i).unwrap(),
                             activation.context.gc_context,
                         );
                     }
@@ -332,13 +331,19 @@ impl<'gc> Executable<'gc> {
                 };
 
                 let max_recursion_depth = activation.context.avm1.max_recursion_depth();
+                let base_clip = if effective_ver > 5 {
+                    af.base_clip
+                } else {
+                    this.as_display_object()
+                        .unwrap_or_else(|| activation.base_clip())
+                };
                 let mut frame = Activation::from_action(
                     activation.context.reborrow(),
                     activation.id.function(name, reason, max_recursion_depth)?,
                     effective_ver,
                     child_scope,
                     af.constant_pool,
-                    af.base_clip,
+                    base_clip,
                     this,
                     Some(callee),
                     Some(argcell),
@@ -499,9 +504,9 @@ impl<'gc> FunctionObject<'gc> {
             context,
             "constructor",
             Value::Object(function),
-            DontEnum.into(),
+            Attribute::DONT_ENUM,
         );
-        function.define_value(context, "prototype", prototype.into(), EnumSet::empty());
+        function.define_value(context, "prototype", prototype.into(), Attribute::empty());
 
         function
     }
@@ -588,16 +593,16 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         this.set_attributes(
             activation.context.gc_context,
             Some("__constructor__"),
-            Attribute::DontEnum.into(),
-            EnumSet::empty(),
+            Attribute::DONT_ENUM,
+            Attribute::empty(),
         );
         if activation.current_swf_version() < 7 {
             this.set("constructor", (*self).into(), activation)?;
             this.set_attributes(
                 activation.context.gc_context,
                 Some("constructor"),
-                Attribute::DontEnum.into(),
-                EnumSet::empty(),
+                Attribute::DONT_ENUM,
+                Attribute::empty(),
             );
         }
         if let Some(exec) = &self.data.read().constructor {
@@ -630,16 +635,16 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         this.set_attributes(
             activation.context.gc_context,
             Some("__constructor__"),
-            Attribute::DontEnum.into(),
-            EnumSet::empty(),
+            Attribute::DONT_ENUM,
+            Attribute::empty(),
         );
         if activation.current_swf_version() < 7 {
             this.set("constructor", (*self).into(), activation)?;
             this.set_attributes(
                 activation.context.gc_context,
                 Some("constructor"),
-                Attribute::DontEnum.into(),
-                EnumSet::empty(),
+                Attribute::DONT_ENUM,
+                Attribute::empty(),
             );
         }
         if let Some(exec) = &self.data.read().constructor {
@@ -709,7 +714,7 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         gc_context: MutationContext<'gc, '_>,
         name: &str,
         value: Value<'gc>,
-        attributes: EnumSet<Attribute>,
+        attributes: Attribute,
     ) {
         self.base.define_value(gc_context, name, value, attributes)
     }
@@ -718,8 +723,8 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         &self,
         gc_context: MutationContext<'gc, '_>,
         name: Option<&str>,
-        set_attributes: EnumSet<Attribute>,
-        clear_attributes: EnumSet<Attribute>,
+        set_attributes: Attribute,
+        clear_attributes: Attribute,
     ) {
         self.base
             .set_attributes(gc_context, name, set_attributes, clear_attributes)
@@ -731,7 +736,7 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         name: &str,
         get: Object<'gc>,
         set: Option<Object<'gc>>,
-        attributes: EnumSet<Attribute>,
+        attributes: Attribute,
     ) {
         self.base
             .add_property(gc_context, name, get, set, attributes)
@@ -744,7 +749,7 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         name: &str,
         get: Object<'gc>,
         set: Option<Object<'gc>>,
-        attributes: EnumSet<Attribute>,
+        attributes: Attribute,
     ) {
         self.base
             .add_property_with_case(activation, gc_context, name, get, set, attributes)

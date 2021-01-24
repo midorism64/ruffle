@@ -14,7 +14,6 @@ use crate::ecma_conversions::f64_to_wrapping_u32;
 use crate::tag_utils::SwfSlice;
 use crate::vminterface::Instantiator;
 use crate::{avm_error, avm_warn};
-use enumset::EnumSet;
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use indexmap::IndexMap;
 use rand::Rng;
@@ -194,7 +193,7 @@ pub struct Activation<'a, 'gc: 'a, 'gc_context: 'a> {
     scope: GcCell<'gc, Scope<'gc>>,
 
     /// The currently in use constant pool.
-    constant_pool: GcCell<'gc, Vec<String>>,
+    constant_pool: GcCell<'gc, Vec<Value<'gc>>>,
 
     /// The immutable value of `this`.
     this: Object<'gc>,
@@ -253,7 +252,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         id: ActivationIdentifier<'a>,
         swf_version: u8,
         scope: GcCell<'gc, Scope<'gc>>,
-        constant_pool: GcCell<'gc, Vec<String>>,
+        constant_pool: GcCell<'gc, Vec<Value<'gc>>>,
         base_clip: DisplayObject<'gc>,
         this: Object<'gc>,
         callee: Option<Object<'gc>>,
@@ -897,7 +896,10 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             self.context.gc_context,
             constant_pool
                 .iter()
-                .map(|s| (*s).to_string_lossy(self.encoding()))
+                .map(|s| {
+                    AvmString::new(self.context.gc_context, s.to_string_lossy(self.encoding()))
+                        .into()
+                })
                 .collect(),
         );
         self.set_constant_pool(self.context.avm1.constant_pool);
@@ -1133,25 +1135,29 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         //TODO: What happens if we try to extend an object which has no `prototype`?
         //e.g. `class Whatever extends Object.prototype` or `class Whatever extends 5`
-        let super_proto = superclass.get("prototype", self)?.coerce_to_object(self);
 
-        let sub_prototype: Object<'gc> =
-            ScriptObject::object(self.context.gc_context, Some(super_proto)).into();
+        // Use `create_bare_object` to ensure the proper underlying object type when
+        // extending native objects.
+        // TODO: This doesn't work if the user manually wires up `prototype`/`__proto__`.
+        // The native object needs to be created later by the superclass's constructor.
+        // (see #701)
+        let super_prototype = superclass.get("prototype", self)?.coerce_to_object(self);
+        let sub_prototype = super_prototype.create_bare_object(self, super_prototype)?;
 
         sub_prototype.set("constructor", superclass.into(), self)?;
         sub_prototype.set_attributes(
             self.context.gc_context,
             Some("constructor"),
-            Attribute::DontEnum.into(),
-            EnumSet::empty(),
+            Attribute::DONT_ENUM,
+            Attribute::empty(),
         );
 
         sub_prototype.set("__constructor__", superclass.into(), self)?;
         sub_prototype.set_attributes(
             self.context.gc_context,
             Some("__constructor__"),
-            Attribute::DontEnum.into(),
-            EnumSet::empty(),
+            Attribute::DONT_ENUM,
+            Attribute::empty(),
         );
 
         subclass.set("prototype", sub_prototype.into(), self)?;
@@ -1294,7 +1300,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 target.as_display_object()
             } else {
                 let start = self.target_clip_or_root()?;
-                self.resolve_target_display_object(start, target.clone(), true)?
+                self.resolve_target_display_object(start, target, true)?
             }
         } else {
             Some(self.target_clip_or_root()?)
@@ -1786,7 +1792,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 SwfValue::Register(v) => self.current_register(*v),
                 SwfValue::ConstantPool(i) => {
                     if let Some(value) = self.constant_pool().read().get(*i as usize) {
-                        AvmString::new(self.context.gc_context, value).into()
+                        *value
                     } else {
                         avm_warn!(
                             self,
@@ -1805,7 +1811,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     fn action_push_duplicate(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let val = self.context.avm1.pop();
-        self.context.avm1.push(val.clone());
+        self.context.avm1.push(val);
         self.context.avm1.push(val);
         Ok(FrameControl::Continue)
     }
@@ -2022,7 +2028,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_store_register(&mut self, register: u8) -> Result<FrameControl<'gc>, Error<'gc>> {
         // The value must remain on the stack.
         let val = self.context.avm1.pop();
-        self.context.avm1.push(val.clone());
+        self.context.avm1.push(val);
         self.set_current_register(register, val);
 
         Ok(FrameControl::Continue)
@@ -2974,11 +2980,11 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         }
     }
 
-    pub fn constant_pool(&self) -> GcCell<'gc, Vec<String>> {
+    pub fn constant_pool(&self) -> GcCell<'gc, Vec<Value<'gc>>> {
         self.constant_pool
     }
 
-    pub fn set_constant_pool(&mut self, constant_pool: GcCell<'gc, Vec<String>>) {
+    pub fn set_constant_pool(&mut self, constant_pool: GcCell<'gc, Vec<Value<'gc>>>) {
         self.constant_pool = constant_pool;
     }
 

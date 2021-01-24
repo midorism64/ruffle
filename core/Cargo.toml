@@ -20,7 +20,7 @@ png = { version = "0.16.8" }
 puremp3 = { version = "0.1", optional = true }
 ruffle_macros = { path = "macros" }
 swf = { path = "../swf" }
-enumset = "1.0.1"
+bitflags = "1.2.1"
 smallvec = "1.6.1"
 num_enum = "0.5.1"
 quick-xml = "0.20.0"
@@ -35,7 +35,7 @@ num-traits = "0.2"
 instant = "0.1"
 encoding_rs = "0.8.26"
 rand = { version = "0.8.2", features = ["std", "small_rng"], default-features = false }
-serde = { version = "1.0.118", features = ["derive"], optional = true }
+serde = { version = "1.0.121", features = ["derive"], optional = true }
 
 [dependencies.jpeg-decoder]
 version = "0.1.20"

@@ -12,6 +12,7 @@ let ruffle;
 let player;
 
 const container = document.getElementById("main");
+const overlay = document.getElementById("overlay");
 const authorContainer = document.getElementById("author-container");
 const author = document.getElementById("author");
 const sampleFileInputContainer = document.getElementById(
@@ -72,8 +73,30 @@ window.addEventListener("DOMContentLoaded", async () => {
     sampleFileSelected();
 });
 
+window.addEventListener("load", () => {
+    overlay.style.display = "block";
+});
+
 sampleFileInput.addEventListener("change", sampleFileSelected);
-localFileInput.addEventListener("change", localFileSelected);
+localFileInput.addEventListener("change", (event) => {
+    loadFile(event.target.files[0]);
+});
+container.addEventListener("dragenter", () => {
+    overlay.classList.add("drag");
+});
+container.addEventListener("dragleave", () => {
+    overlay.classList.remove("drag");
+});
+container.addEventListener("dragover", (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+});
+container.addEventListener("drop", (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    overlay.classList.remove("drag");
+    loadFile(event.dataTransfer.files[0]);
+});
 
 function sampleFileSelected() {
     const swfData = sampleFileInput[sampleFileInput.selectedIndex].swfData;
@@ -84,8 +107,8 @@ function sampleFileSelected() {
         localFileInput.value = null;
         player.load({ url: swfData.location, ...config });
     } else {
-        document.getElementById("main").children[0].remove();
-        player = ruffle.create_player();
+        container.children[0].remove();
+        player = ruffle.createPlayer();
         player.id = "player";
         container.append(player);
         authorContainer.style.display = "none";
@@ -94,20 +117,16 @@ function sampleFileSelected() {
     }
 }
 
-function localFileSelected() {
+async function loadFile(file) {
+    if (!file) {
+        return;
+    }
+
     sampleFileInput.selectedIndex = 0;
     authorContainer.style.display = "none";
     author.textContent = "";
     author.href = "";
 
-    const file = localFileInput.files[0];
-    if (!file) {
-        return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-        player.load({ data: reader.result, ...config });
-    };
-    reader.readAsArrayBuffer(file);
+    const data = await new Response(file).arrayBuffer();
+    player.load({ data, ...config });
 }

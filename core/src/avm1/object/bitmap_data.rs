@@ -8,9 +8,31 @@ use crate::avm1::activation::Activation;
 use crate::avm1::object::color_transform_object::ColorTransformObject;
 use crate::backend::render::{BitmapHandle, RenderBackend};
 use downcast_rs::__std::fmt::Formatter;
-use rand::prelude::SmallRng;
-use rand::Rng;
 use std::fmt;
+use std::ops::Range;
+
+/// An implementation of the Lehmer/Park-Miller random number generator
+/// Uses the fixed parameters m = 2,147,483,647 and a = 16,807
+pub struct LehmerRNG {
+    x: u32,
+}
+
+impl LehmerRNG {
+    pub fn with_seed(seed: u32) -> Self {
+        Self { x: seed }
+    }
+
+    /// Generate the next value in the sequence via the following formula
+    /// X_(k+1) = a * X_k mod m
+    pub fn gen(&mut self) -> u32 {
+        self.x = ((self.x as u64).overflowing_mul(16_807).0 % 2_147_483_647) as u32;
+        self.x
+    }
+
+    pub fn gen_range(&mut self, rng: Range<u8>) -> u8 {
+        rng.start + (self.gen() % ((rng.end - rng.start) as u32 + 1)) as u8
+    }
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Collect)]
 #[collect(no_drop)]
@@ -296,50 +318,57 @@ impl BitmapData {
 
     pub fn noise(
         &mut self,
-        rng: &mut SmallRng,
-        _seed: u32,
+        seed: i32,
         low: u8,
         high: u8,
         channel_options: ChannelOptions,
         gray_scale: bool,
     ) {
-        for x in 0..self.width() {
-            for y in 0..self.height() {
+        let true_seed = if seed <= 0 {
+            (-seed + 1) as u32
+        } else {
+            seed as u32
+        };
+
+        let mut rng = LehmerRNG::with_seed(true_seed);
+
+        for y in 0..self.height() {
+            for x in 0..self.width() {
                 let pixel_color = if gray_scale {
                     let gray = rng.gen_range(low..high);
-                    Color::argb(
-                        if channel_options.alpha() {
-                            rng.gen_range(low..high)
-                        } else {
-                            255
-                        },
-                        gray,
-                        gray,
-                        gray,
-                    )
+                    let alpha = if channel_options.alpha() {
+                        rng.gen_range(low..high)
+                    } else {
+                        255
+                    };
+
+                    Color::argb(alpha, gray, gray, gray)
                 } else {
-                    Color::argb(
-                        if channel_options.alpha() {
-                            rng.gen_range(low..high)
-                        } else {
-                            255
-                        },
-                        if channel_options.red() {
-                            rng.gen_range(low..high)
-                        } else {
-                            0
-                        },
-                        if channel_options.green() {
-                            rng.gen_range(low..high)
-                        } else {
-                            0
-                        },
-                        if channel_options.blue() {
-                            rng.gen_range(low..high)
-                        } else {
-                            0
-                        },
-                    )
+                    let r = if channel_options.red() {
+                        rng.gen_range(low..high)
+                    } else {
+                        0
+                    };
+
+                    let g = if channel_options.green() {
+                        rng.gen_range(low..high)
+                    } else {
+                        0
+                    };
+
+                    let b = if channel_options.blue() {
+                        rng.gen_range(low..high)
+                    } else {
+                        0
+                    };
+
+                    let a = if channel_options.alpha() {
+                        rng.gen_range(low..high)
+                    } else {
+                        255
+                    };
+
+                    Color::argb(a, r, g, b)
                 };
 
                 self.set_pixel32_raw(x, y, pixel_color);
@@ -691,12 +720,8 @@ impl<'gc> TObject<'gc> for BitmapDataObject<'gc> {
     fn create_bare_object(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-        _this: Object<'gc>,
+        this: Object<'gc>,
     ) -> Result<Object<'gc>, Error<'gc>> {
-        Ok(BitmapDataObject::empty_object(
-            activation.context.gc_context,
-            Some(activation.context.avm1.prototypes.bitmap_data),
-        )
-        .into())
+        Ok(BitmapDataObject::empty_object(activation.context.gc_context, Some(this)).into())
     }
 }

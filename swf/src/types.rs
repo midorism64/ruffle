@@ -4,8 +4,7 @@
 //! version 19 (henceforth SWF19):
 //! https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf
 use crate::string::SwfStr;
-use enumset::{EnumSet, EnumSetType};
-use std::collections::HashSet;
+use bitflags::bitflags;
 
 mod matrix;
 
@@ -418,39 +417,40 @@ pub enum BlendMode {
 /// An clip action (a.k.a. clip event) placed on a movieclip instance.
 /// Created in the Flash IDE using `onClipEvent` or `on` blocks.
 ///
-/// [SWF19 pp.37-38 ClipActionRecord](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=37)
+/// [SWF19 pp.37-38 ClipActionRecord](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=39)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipAction<'a> {
-    pub events: EnumSet<ClipEventFlag>,
+    pub events: ClipEventFlag,
     pub key_code: Option<KeyCode>,
     pub action_data: &'a [u8],
 }
 
-/// An event that can be attached to a movieclip instance using
-/// an `onClipEvent` or `on` block.
-///
-/// [SWF19 pp.48-50 ClipEvent](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=38)
-#[derive(Debug, EnumSetType)]
-pub enum ClipEventFlag {
-    Construct,
-    Data,
-    DragOut,
-    DragOver,
-    EnterFrame,
-    Initialize,
-    KeyUp,
-    KeyDown,
-    KeyPress,
-    Load,
-    MouseUp,
-    MouseDown,
-    MouseMove,
-    Press,
-    RollOut,
-    RollOver,
-    Release,
-    ReleaseOutside,
-    Unload,
+bitflags! {
+    /// An event that can be attached to a movieclip instance using
+    /// an `onClipEvent` or `on` block.
+    ///
+    /// [SWF19 pp.48-50 ClipEvent](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=50)
+    pub struct ClipEventFlag: u32 {
+        const CONSTRUCT       = 1 << 0;
+        const DATA            = 1 << 1;
+        const DRAG_OUT        = 1 << 2;
+        const DRAG_OVER       = 1 << 3;
+        const ENTER_FRAME     = 1 << 4;
+        const INITIALIZE      = 1 << 5;
+        const KEY_UP          = 1 << 6;
+        const KEY_DOWN        = 1 << 7;
+        const KEY_PRESS       = 1 << 8;
+        const LOAD            = 1 << 9;
+        const MOUSE_UP        = 1 << 10;
+        const MOUSE_DOWN      = 1 << 11;
+        const MOUSE_MOVE      = 1 << 12;
+        const PRESS           = 1 << 13;
+        const ROLL_OUT        = 1 << 14;
+        const ROLL_OVER       = 1 << 15;
+        const RELEASE         = 1 << 16;
+        const RELEASE_OUTSIDE = 1 << 17;
+        const UNLOAD          = 1 << 18;
+    }
 }
 
 /// A key code used in `ButtonAction` and `ClipAction` key press events.
@@ -813,7 +813,7 @@ pub struct Button<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ButtonRecord {
-    pub states: HashSet<ButtonState>,
+    pub states: ButtonState,
     pub id: CharacterId,
     pub depth: Depth,
     pub matrix: Matrix,
@@ -822,12 +822,13 @@ pub struct ButtonRecord {
     pub blend_mode: BlendMode,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub enum ButtonState {
-    Up,
-    Over,
-    Down,
-    HitTest,
+bitflags! {
+    pub struct ButtonState: u8 {
+        const UP       = 1 << 0;
+        const OVER     = 1 << 1;
+        const DOWN     = 1 << 2;
+        const HIT_TEST = 1 << 3;
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -849,23 +850,24 @@ pub type ButtonSound = (CharacterId, SoundInfo);
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ButtonAction<'a> {
-    pub conditions: HashSet<ButtonActionCondition>,
+    pub conditions: ButtonActionCondition,
     pub key_code: Option<u8>,
     pub action_data: &'a [u8],
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub enum ButtonActionCondition {
-    IdleToOverDown,
-    OutDownToIdle,
-    OutDownToOverDown,
-    OverDownToOutDown,
-    OverDownToOverUp,
-    OverUpToOverDown,
-    OverUpToIdle,
-    IdleToOverUp,
-    OverDownToIdle,
-    KeyPress,
+bitflags! {
+    pub struct ButtonActionCondition: u16 {
+        const IDLE_TO_OVER_UP       = 1 << 0;
+        const OVER_UP_TO_IDLE       = 1 << 1;
+        const OVER_UP_TO_OVER_DOWN  = 1 << 2;
+        const OVER_DOWN_TO_OVER_UP  = 1 << 3;
+        const OVER_DOWN_TO_OUT_DOWN = 1 << 4;
+        const OUT_DOWN_TO_OVER_DOWN = 1 << 5;
+        const OUT_DOWN_TO_IDLE      = 1 << 6;
+        const IDLE_TO_OVER_DOWN     = 1 << 7;
+        const OVER_DOWN_TO_IDLE     = 1 << 8;
+        const KEY_PRESS             = 1 << 9;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

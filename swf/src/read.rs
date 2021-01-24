@@ -13,8 +13,6 @@ use crate::{
 };
 use bitstream_io::BitRead;
 use byteorder::{LittleEndian, ReadBytesExt};
-use enumset::EnumSet;
-use std::collections::HashSet;
 use std::io::{self, Read};
 
 /// Parse a decompressed SWF and return a `Vec` of tags.
@@ -803,9 +801,7 @@ impl<'a> Reader<'a> {
             is_track_as_menu: false,
             records,
             actions: vec![ButtonAction {
-                conditions: vec![ButtonActionCondition::OverDownToOverUp]
-                    .into_iter()
-                    .collect(),
+                conditions: ButtonActionCondition::OVER_DOWN_TO_OVER_UP,
                 key_code: None,
                 action_data,
             }],
@@ -903,19 +899,7 @@ impl<'a> Reader<'a> {
         if flags == 0 {
             return Ok(None);
         }
-        let mut states = HashSet::with_capacity(4);
-        if (flags & 0b1) != 0 {
-            states.insert(ButtonState::Up);
-        }
-        if (flags & 0b10) != 0 {
-            states.insert(ButtonState::Over);
-        }
-        if (flags & 0b100) != 0 {
-            states.insert(ButtonState::Down);
-        }
-        if (flags & 0b1000) != 0 {
-            states.insert(ButtonState::HitTest);
-        }
+        let states = ButtonState::from_bits_truncate(flags);
         let id = self.read_u16()?;
         let depth = self.read_u16()?;
         let matrix = self.read_matrix()?;
@@ -950,39 +934,9 @@ impl<'a> Reader<'a> {
     fn read_button_action(&mut self) -> Result<(ButtonAction<'a>, bool)> {
         let length = self.read_u16()?;
         let flags = self.read_u16()?;
-        let mut conditions = HashSet::with_capacity(8);
-        if (flags & 0b1) != 0 {
-            conditions.insert(ButtonActionCondition::IdleToOverUp);
-        }
-        if (flags & 0b10) != 0 {
-            conditions.insert(ButtonActionCondition::OverUpToIdle);
-        }
-        if (flags & 0b100) != 0 {
-            conditions.insert(ButtonActionCondition::OverUpToOverDown);
-        }
-        if (flags & 0b1000) != 0 {
-            conditions.insert(ButtonActionCondition::OverDownToOverUp);
-        }
-        if (flags & 0b1_0000) != 0 {
-            conditions.insert(ButtonActionCondition::OverDownToOutDown);
-        }
-        if (flags & 0b10_0000) != 0 {
-            conditions.insert(ButtonActionCondition::OutDownToOverDown);
-        }
-        if (flags & 0b100_0000) != 0 {
-            conditions.insert(ButtonActionCondition::OutDownToIdle);
-        }
-        if (flags & 0b1000_0000) != 0 {
-            conditions.insert(ButtonActionCondition::IdleToOverDown);
-        }
-
-        if (flags & 0b1_0000_0000) != 0 {
-            conditions.insert(ButtonActionCondition::OverDownToIdle);
-        }
+        let mut conditions = ButtonActionCondition::from_bits_truncate(flags);
         let key_code = (flags >> 9) as u8;
-        if key_code != 0 {
-            conditions.insert(ButtonActionCondition::KeyPress);
-        }
+        conditions.set(ButtonActionCondition::KEY_PRESS, key_code != 0);
         let action_data = if length >= 4 {
             self.read_slice(length as usize - 4)?
         } else if length == 0 {
@@ -1369,7 +1323,7 @@ impl<'a> Reader<'a> {
         let mut start_fill_styles = Vec::with_capacity(num_fill_styles);
         let mut end_fill_styles = Vec::with_capacity(num_fill_styles);
         for _ in 0..num_fill_styles {
-            let (start, end) = self.read_morph_fill_style(shape_version)?;
+            let (start, end) = self.read_morph_fill_style()?;
             start_fill_styles.push(start);
             end_fill_styles.push(end);
         }
@@ -1495,7 +1449,7 @@ impl<'a> Reader<'a> {
                 )
             };
             let (start_fill_style, end_fill_style) = if has_fill {
-                let (start, end) = self.read_morph_fill_style(shape_version)?;
+                let (start, end) = self.read_morph_fill_style()?;
                 (Some(start), Some(end))
             } else {
                 (None, None)
@@ -1529,7 +1483,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn read_morph_fill_style(&mut self, shape_version: u8) -> Result<(FillStyle, FillStyle)> {
+    fn read_morph_fill_style(&mut self) -> Result<(FillStyle, FillStyle)> {
         let fill_style_type = self.read_u8()?;
         let fill_style = match fill_style_type {
             0x00 => {
@@ -1555,12 +1509,8 @@ impl<'a> Reader<'a> {
             }
 
             0x13 => {
-                if self.version < 8 || shape_version < 2 {
-                    return Err(Error::invalid_data(
-                        "Focal gradients are only supported in SWF version 8 \
-                         or higher.",
-                    ));
-                }
+                // SWF19 says focal gradients are only allowed in SWFv8+ and DefineMorphShapeShape2,
+                // but it works even in earlier tags (#2730).
                 // TODO(Herschel): How is focal_point stored?
                 let (start_gradient, end_gradient) = self.read_morph_gradient()?;
                 let start_focal_point = self.read_fixed8()?;
@@ -1755,18 +1705,12 @@ impl<'a> Reader<'a> {
 
             0x12 => FillStyle::RadialGradient(self.read_gradient(shape_version)?),
 
-            0x13 => {
-                if self.version < 8 || shape_version < 4 {
-                    return Err(Error::invalid_data(
-                        "Focal gradients are only supported in SWF version 8 \
-                         or higher.",
-                    ));
-                }
-                FillStyle::FocalGradient {
-                    gradient: self.read_gradient(shape_version)?,
-                    focal_point: self.read_fixed8()?,
-                }
-            }
+            0x13 => FillStyle::FocalGradient {
+                // SWF19 says focal gradients are only allowed in SWFv8+ and DefineShape4,
+                // but it works even in earlier tags (#2730).
+                gradient: self.read_gradient(shape_version)?,
+                focal_point: self.read_fixed8()?,
+            },
 
             0x40..=0x43 => FillStyle::Bitmap {
                 id: self.read_u16()?,
@@ -2208,7 +2152,7 @@ impl<'a> Reader<'a> {
             Ok(None)
         } else {
             let mut length = self.read_u32()?;
-            let key_code = if events.contains(ClipEventFlag::KeyPress) {
+            let key_code = if events.contains(ClipEventFlag::KEY_PRESS) {
                 // ActionData length includes the 1 byte key code.
                 length -= 1;
                 Some(self.read_u8()?)
@@ -2225,83 +2169,46 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn read_clip_event_flags(&mut self) -> Result<EnumSet<ClipEventFlag>> {
+    fn read_clip_event_flags(&mut self) -> Result<ClipEventFlag> {
         // TODO: Switch to a bitset.
-        let mut event_list = EnumSet::new();
+        let mut event_list = ClipEventFlag::empty();
+
         let flags = self.read_u8()?;
-        if flags & 0b1000_0000 != 0 {
-            event_list.insert(ClipEventFlag::KeyUp);
-        }
-        if flags & 0b0100_0000 != 0 {
-            event_list.insert(ClipEventFlag::KeyDown);
-        }
-        if flags & 0b0010_0000 != 0 {
-            event_list.insert(ClipEventFlag::MouseUp);
-        }
-        if flags & 0b0001_0000 != 0 {
-            event_list.insert(ClipEventFlag::MouseDown);
-        }
-        if flags & 0b0000_1000 != 0 {
-            event_list.insert(ClipEventFlag::MouseMove);
-        }
-        if flags & 0b0000_0100 != 0 {
-            event_list.insert(ClipEventFlag::Unload);
-        }
-        if flags & 0b0000_0010 != 0 {
-            event_list.insert(ClipEventFlag::EnterFrame);
-        }
-        if flags & 0b0000_0001 != 0 {
-            event_list.insert(ClipEventFlag::Load);
-        }
-        if self.version < 6 {
+        event_list.set(ClipEventFlag::KEY_UP, flags & 0b1000_0000 != 0);
+        event_list.set(ClipEventFlag::KEY_DOWN, flags & 0b0100_0000 != 0);
+        event_list.set(ClipEventFlag::MOUSE_UP, flags & 0b0010_0000 != 0);
+        event_list.set(ClipEventFlag::MOUSE_DOWN, flags & 0b0001_0000 != 0);
+        event_list.set(ClipEventFlag::MOUSE_MOVE, flags & 0b0000_1000 != 0);
+        event_list.set(ClipEventFlag::UNLOAD, flags & 0b0000_0100 != 0);
+        event_list.set(ClipEventFlag::ENTER_FRAME, flags & 0b0000_0010 != 0);
+        event_list.set(ClipEventFlag::LOAD, flags & 0b0000_0001 != 0);
+
+        if self.version > 5 {
+            let flags = self.read_u8()?;
+            event_list.set(ClipEventFlag::DRAG_OVER, flags & 0b1000_0000 != 0);
+            event_list.set(ClipEventFlag::ROLL_OUT, flags & 0b0100_0000 != 0);
+            event_list.set(ClipEventFlag::ROLL_OVER, flags & 0b0010_0000 != 0);
+            event_list.set(ClipEventFlag::RELEASE_OUTSIDE, flags & 0b0001_0000 != 0);
+            event_list.set(ClipEventFlag::RELEASE, flags & 0b0000_1000 != 0);
+            event_list.set(ClipEventFlag::PRESS, flags & 0b0000_0100 != 0);
+            event_list.set(ClipEventFlag::INITIALIZE, flags & 0b0000_0010 != 0);
+            event_list.set(ClipEventFlag::DATA, flags & 0b0000_0001 != 0);
+
+            let flags = self.read_u8()?;
+            // Construct was only added in SWF7, but it's not version-gated;
+            // Construct events will still fire in SWF6 in a v7+ player. (#1424)
+            event_list.set(ClipEventFlag::CONSTRUCT, flags & 0b0000_0100 != 0);
+            event_list.set(ClipEventFlag::KEY_PRESS, flags & 0b0000_0010 != 0);
+            event_list.set(ClipEventFlag::DRAG_OUT, flags & 0b0000_0001 != 0);
+
+            self.read_u8()?;
+        } else {
             // SWF19 pp. 48-50: For SWFv5, the ClipEventFlags only had 2 bytes of flags,
             // with the 2nd byte reserved (all 0).
             // This was expanded to 4 bytes in SWFv6.
             self.read_u8()?;
-        } else {
-            let flags = self.read_u8()?;
-            if flags & 0b1000_0000 != 0 {
-                event_list.insert(ClipEventFlag::DragOver);
-            }
-            if flags & 0b0100_0000 != 0 {
-                event_list.insert(ClipEventFlag::RollOut);
-            }
-            if flags & 0b0010_0000 != 0 {
-                event_list.insert(ClipEventFlag::RollOver);
-            }
-            if flags & 0b0001_0000 != 0 {
-                event_list.insert(ClipEventFlag::ReleaseOutside);
-            }
-            if flags & 0b0000_1000 != 0 {
-                event_list.insert(ClipEventFlag::Release);
-            }
-            if flags & 0b0000_0100 != 0 {
-                event_list.insert(ClipEventFlag::Press);
-            }
-            if flags & 0b0000_0010 != 0 {
-                event_list.insert(ClipEventFlag::Initialize);
-            }
-            if flags & 0b0000_0001 != 0 {
-                event_list.insert(ClipEventFlag::Data);
-            }
-            if self.version < 6 {
-                self.read_u16()?;
-            } else {
-                let flags = self.read_u8()?;
-                if flags & 0b0000_0100 != 0 {
-                    // Construct was only added in SWF7, but it's not version-gated;
-                    // Construct events will still fire in SWF6 in a v7+ player. (#1424)
-                    event_list.insert(ClipEventFlag::Construct);
-                }
-                if flags & 0b0000_0010 != 0 {
-                    event_list.insert(ClipEventFlag::KeyPress);
-                }
-                if flags & 0b0000_0001 != 0 {
-                    event_list.insert(ClipEventFlag::DragOut);
-                }
-                self.read_u8()?;
-            }
         }
+
         Ok(event_list)
     }
 

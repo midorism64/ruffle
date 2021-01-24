@@ -13,7 +13,6 @@ use crate::{
 };
 use bitstream_io::BitWrite;
 use byteorder::{LittleEndian, WriteBytesExt};
-use enumset::EnumSet;
 use std::cmp::max;
 use std::io::{self, Write};
 
@@ -1065,79 +1064,13 @@ impl<W: Write> Writer<W> {
                 } else {
                     writer.write_u16(0)?;
                 }
-                writer.write_u8(
-                    if action
-                        .conditions
-                        .contains(&ButtonActionCondition::IdleToOverDown)
-                    {
-                        0b1000_0000
-                    } else {
-                        0
-                    } | if action
-                        .conditions
-                        .contains(&ButtonActionCondition::OutDownToIdle)
-                    {
-                        0b100_0000
-                    } else {
-                        0
-                    } | if action
-                        .conditions
-                        .contains(&ButtonActionCondition::OutDownToOverDown)
-                    {
-                        0b10_0000
-                    } else {
-                        0
-                    } | if action
-                        .conditions
-                        .contains(&ButtonActionCondition::OverDownToOutDown)
-                    {
-                        0b1_0000
-                    } else {
-                        0
-                    } | if action
-                        .conditions
-                        .contains(&ButtonActionCondition::OverDownToOverUp)
-                    {
-                        0b1000
-                    } else {
-                        0
-                    } | if action
-                        .conditions
-                        .contains(&ButtonActionCondition::OverUpToOverDown)
-                    {
-                        0b100
-                    } else {
-                        0
-                    } | if action
-                        .conditions
-                        .contains(&ButtonActionCondition::OverUpToIdle)
-                    {
-                        0b10
-                    } else {
-                        0
-                    } | if action
-                        .conditions
-                        .contains(&ButtonActionCondition::IdleToOverUp)
-                    {
-                        0b1
-                    } else {
-                        0
-                    },
-                )?;
-                let mut flags = if action
-                    .conditions
-                    .contains(&ButtonActionCondition::OverDownToIdle)
-                {
-                    0b1
-                } else {
-                    0
-                };
-                if action.conditions.contains(&ButtonActionCondition::KeyPress) {
+                let mut flags = action.conditions.bits();
+                if action.conditions.contains(ButtonActionCondition::KEY_PRESS) {
                     if let Some(key_code) = action.key_code {
-                        flags |= key_code << 1;
+                        flags |= (key_code as u16) << 9;
                     }
                 }
-                writer.write_u8(flags)?;
+                writer.write_u16(flags)?;
                 writer.output.write_all(&action.action_data)?;
             }
         }
@@ -1179,7 +1112,7 @@ impl<W: Write> Writer<W> {
                 .iter()
                 .zip(data.end.fill_styles.iter())
             {
-                writer.write_morph_fill_style(start, end, data.version)?;
+                writer.write_morph_fill_style(start, end)?;
             }
 
             if num_line_styles >= 0xff {
@@ -1263,12 +1196,7 @@ impl<W: Write> Writer<W> {
         Ok(())
     }
 
-    fn write_morph_fill_style(
-        &mut self,
-        start: &FillStyle,
-        end: &FillStyle,
-        shape_version: u8,
-    ) -> Result<()> {
+    fn write_morph_fill_style(&mut self, start: &FillStyle, end: &FillStyle) -> Result<()> {
         match (start, end) {
             (&FillStyle::Color(ref start_color), &FillStyle::Color(ref end_color)) => {
                 self.write_u8(0x00)?; // Solid color.
@@ -1302,13 +1230,6 @@ impl<W: Write> Writer<W> {
                     focal_point: end_focal_point,
                 },
             ) => {
-                if self.version < 8 || shape_version < 2 {
-                    return Err(Error::invalid_data(
-                        "Focal gradients are only support in SWF version 8 \
-                         and higher.",
-                    ));
-                }
-
                 self.write_u8(0x13)?; // Focal gradient.
                 self.write_morph_gradient(start_gradient, end_gradient)?;
                 self.write_fixed8(start_focal_point)?;
@@ -1443,7 +1364,7 @@ impl<W: Write> Writer<W> {
                 }
 
                 (&Some(ref start_fill), &Some(ref end_fill)) => {
-                    self.write_morph_fill_style(start_fill, end_fill, shape_version)?
+                    self.write_morph_fill_style(start_fill, end_fill)?
                 }
 
                 _ => {
@@ -1573,23 +1494,7 @@ impl<W: Write> Writer<W> {
             0b1_0000
         } else {
             0
-        } | if record.states.contains(&ButtonState::HitTest) {
-            0b1000
-        } else {
-            0
-        } | if record.states.contains(&ButtonState::Down) {
-            0b100
-        } else {
-            0
-        } | if record.states.contains(&ButtonState::Over) {
-            0b10
-        } else {
-            0
-        } | if record.states.contains(&ButtonState::Up) {
-            0b1
-        } else {
-            0
-        };
+        } | record.states.bits();
         self.write_u8(flags)?;
         self.write_u16(record.id)?;
         self.write_u16(record.depth)?;
@@ -1772,13 +1677,6 @@ impl<W: Write> Writer<W> {
                 ref gradient,
                 focal_point,
             } => {
-                if self.version < 8 {
-                    return Err(Error::invalid_data(
-                        "Focal gradients are only support in SWF version 8 \
-                         and higher.",
-                    ));
-                }
-
                 self.write_u8(0x13)?; // Focal gradient.
                 self.write_gradient(gradient, shape_version)?;
                 self.write_fixed8(focal_point)?;
@@ -2195,7 +2093,7 @@ impl<W: Write> Writer<W> {
     fn write_clip_actions(&mut self, clip_actions: &[ClipAction]) -> Result<()> {
         self.write_u16(0)?; // Reserved
         {
-            let mut all_events = EnumSet::new();
+            let mut all_events = ClipEventFlag::empty();
             for action in clip_actions {
                 all_events |= action.events;
             }
@@ -2219,31 +2117,31 @@ impl<W: Write> Writer<W> {
         Ok(())
     }
 
-    fn write_clip_event_flags(&mut self, clip_events: EnumSet<ClipEventFlag>) -> Result<()> {
+    fn write_clip_event_flags(&mut self, clip_events: ClipEventFlag) -> Result<()> {
         // TODO: Assert proper version.
         let version = self.version;
         let mut bits = self.bits();
-        bits.write_bit(clip_events.contains(ClipEventFlag::KeyUp))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::KeyDown))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::MouseUp))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::MouseDown))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::MouseMove))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::Unload))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::EnterFrame))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::Load))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::DragOver))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::RollOut))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::RollOver))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::ReleaseOutside))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::Release))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::Press))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::Initialize))?;
-        bits.write_bit(clip_events.contains(ClipEventFlag::Data))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::KEY_UP))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::KEY_DOWN))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::MOUSE_UP))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::MOUSE_DOWN))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::MOUSE_MOVE))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::UNLOAD))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::ENTER_FRAME))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::LOAD))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::DRAG_OVER))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::ROLL_OUT))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::ROLL_OVER))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::RELEASE_OUTSIDE))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::RELEASE))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::PRESS))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::INITIALIZE))?;
+        bits.write_bit(clip_events.contains(ClipEventFlag::DATA))?;
         if version >= 6 {
             bits.write_ubits(5, 0)?;
-            bits.write_bit(clip_events.contains(ClipEventFlag::Construct))?;
-            bits.write_bit(clip_events.contains(ClipEventFlag::KeyPress))?;
-            bits.write_bit(clip_events.contains(ClipEventFlag::DragOut))?;
+            bits.write_bit(clip_events.contains(ClipEventFlag::CONSTRUCT))?;
+            bits.write_bit(clip_events.contains(ClipEventFlag::KEY_PRESS))?;
+            bits.write_bit(clip_events.contains(ClipEventFlag::DRAG_OUT))?;
             bits.write_ubits(8, 0)?;
         }
         Ok(())
