@@ -5,13 +5,13 @@
 【2020/12/19, 2021/01/24追記】このリポジトリで対応していた本家Ruffleの不具合がだいたい直ったようなので、フォント（core/assets/noto-sans-definefont3.bin）だけ持っていって本家をビルドすれば日本語が表示できます。  
 noto-sans-definefont3.binが重い場合には、以下のフォントに差し替えて利用できます。
  - noto_sans_cjk_jis1.bin
-  - JIS第一水準のみのサブセット
+   - JIS第一水準のみのサブセット
  - noto_sans_cjk_jis1_plus.bin
-  - JIS第一水準+常用、人名漢字のサブセット
+   - JIS第一水準+常用、人名漢字のサブセット
  - noto_sans_cjk_jis2.bin
-  - JIS第二水準のみのサブセット
+   - JIS第二水準のみのサブセット
  - noto_sans_cjk_jis2_plus.bin
-  - JIS第二水準+常用、人名漢字のサブセット
+   - JIS第二水準+常用、人名漢字のサブセット
 
 noto-sans-definefont3.binの作成には、とりぽっぽ🚂💨さん(twitter: @toripoppo0307)に多大なるご協力をいただきました。
  
