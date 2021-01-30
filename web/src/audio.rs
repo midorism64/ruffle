@@ -1,25 +1,25 @@
 use fnv::FnvHashMap;
 use generational_arena::Arena;
-use ruffle_core::backend::audio::decoders::{AdpcmDecoder, Mp3Decoder};
-use ruffle_core::backend::audio::swf::{self, AudioCompression};
 use ruffle_core::backend::audio::{
-    AudioBackend, AudioStreamHandle, SoundHandle, SoundInstanceHandle,
+    decoders::{AdpcmDecoder, Mp3Decoder},
+    swf::{self, AudioCompression},
+    AudioBackend, PreloadStreamHandle, SoundHandle, SoundInstanceHandle, SoundTransform,
 };
 use ruffle_web_common::JsResult;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::{closure::Closure, prelude::*, JsCast};
-use web_sys::AudioContext;
+use web_sys::{AudioContext, GainNode};
 
 pub struct WebAudioBackend {
     context: AudioContext,
     sounds: Arena<Sound>,
-    stream_data: FnvHashMap<swf::CharacterId, StreamData>,
-    id_to_sound: FnvHashMap<swf::CharacterId, SoundHandle>,
     left_samples: Vec<f32>,
     right_samples: Vec<f32>,
     frame_rate: f64,
     min_sample_rate: u16,
+    preload_stream_data: FnvHashMap<PreloadStreamHandle, StreamData>,
+    next_stream_id: u32,
 }
 
 thread_local! {
@@ -68,6 +68,9 @@ struct Sound {
 
     /// Number of samples to skip encoder delay.
     skip_sample_frames: u16,
+
+    /// If this is a stream sound, the frame numbers and sample counts for each segment of the stream.
+    stream_segments: Vec<(u16, u32)>,
 }
 
 type Decoder = Box<dyn Iterator<Item = [i16; 2]>>;
@@ -77,6 +80,7 @@ type Decoder = Box<dyn Iterator<Item = [i16; 2]>>;
 /// a stream sound (`SoundStreamBlock`).
 struct SoundInstance {
     /// Handle to the sound clip.
+    #[allow(dead_code)]
     handle: Option<SoundHandle>,
 
     /// Format of the sound.
@@ -92,13 +96,9 @@ struct SoundInstance {
 /// and any event listeners are removed.
 impl Drop for SoundInstance {
     fn drop(&mut self) {
-        if let SoundInstanceType::AudioBuffer {
-            node,
-            buffer_source_node,
-        } = &self.instance_type
-        {
-            let _ = buffer_source_node.set_onended(None);
-            let _ = node.disconnect();
+        if let SoundInstanceType::AudioBuffer(instance) = &self.instance_type {
+            let _ = instance.buffer_source_node.set_onended(None);
+            let _ = instance.node.disconnect();
         }
     }
 }
@@ -106,14 +106,186 @@ impl Drop for SoundInstance {
 #[allow(dead_code)]
 enum SoundInstanceType {
     Decoder(Decoder),
-    AudioBuffer {
-        /// The node that is connected to the output.
-        node: web_sys::AudioNode,
+    AudioBuffer(AudioBufferInstance),
+}
 
-        /// The buffer node containing the audio data.
-        /// This is often the same as `node`, but will be different
-        /// if there is a custom envelope on this sound.
-        buffer_source_node: web_sys::AudioBufferSourceNode,
+/// A sound instance that is playing from an AudioBuffersource node.
+struct AudioBufferInstance {
+    /// The node that is connected to the output.
+    node: web_sys::AudioNode,
+
+    /// The buffer node containing the audio data.
+    /// This is often the same as `node`, but will be different
+    /// if there is a custom envelope on this sound.
+    sound_transform_nodes: SoundTransformNodes,
+
+    /// The audio node with envelopes applied.
+    envelope_node: web_sys::AudioNode,
+
+    /// The buffer node containing the audio data.
+    /// This is often the same as `envelope_node`, but will be different
+    /// if there is a custom envelope on this sound.
+    buffer_source_node: web_sys::AudioBufferSourceNode,
+}
+
+impl AudioBufferInstance {
+    #[allow(clippy::float_cmp)]
+    fn set_transform(&mut self, context: &AudioContext, transform: &SoundTransform) {
+        let is_full_transform = transform.left_to_right != 0.0
+            || transform.right_to_left != 0.0
+            || transform.left_to_left != transform.right_to_right;
+
+        // Lazily instantiate gain nodes, depending on the type of transform.
+        match &self.sound_transform_nodes {
+            SoundTransformNodes::None => {
+                if is_full_transform {
+                    let _ = self.create_full_transform(context);
+                } else if transform.left_to_left != 1.0 || transform.right_to_right != 1.0 {
+                    let _ = self.create_volume_transform(context);
+                }
+            }
+            SoundTransformNodes::Volume { .. } => {
+                if is_full_transform {
+                    let _ = self.create_full_transform(context);
+                }
+            }
+            SoundTransformNodes::Transform { .. } => (),
+        }
+
+        match &self.sound_transform_nodes {
+            SoundTransformNodes::None => (),
+            SoundTransformNodes::Volume { gain } => {
+                // Assumes right_to_right is matching.
+                gain.gain().set_value(transform.left_to_left);
+            }
+            SoundTransformNodes::Transform {
+                left_to_left_gain,
+                left_to_right_gain,
+                right_to_left_gain,
+                right_to_right_gain,
+            } => {
+                left_to_left_gain.gain().set_value(transform.left_to_left);
+                left_to_right_gain.gain().set_value(transform.left_to_right);
+                right_to_left_gain.gain().set_value(transform.right_to_left);
+                right_to_right_gain
+                    .gain()
+                    .set_value(transform.right_to_right);
+            }
+        }
+    }
+
+    /// Adds a gain node to this sound instance, allowing the volume to be adjusted.
+    fn create_volume_transform(
+        &mut self,
+        context: &AudioContext,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Create the gain node to control the volume.
+        let gain = context.create_gain().into_js_result()?;
+
+        // Wire up the nodes.
+        // Note that for mono tracks, we want to use channel 0 (left) for both the left and right.
+        self.node.disconnect().warn_on_error();
+        self.envelope_node.disconnect().warn_on_error();
+        self.envelope_node
+            .connect_with_audio_node(&gain)
+            .into_js_result()?;
+
+        gain.connect_with_audio_node(&context.destination())
+            .warn_on_error();
+
+        self.node = gain.clone().into();
+        self.sound_transform_nodes = SoundTransformNodes::Volume { gain };
+        Ok(())
+    }
+
+    /// Adds a bunch of gain nodes to this sound instance, allowing a SoundTransform
+    /// to be applied to it.
+    fn create_full_transform(
+        &mut self,
+        context: &AudioContext,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let is_stereo = self.node.channel_count() > 1;
+
+        // Split the left and right channels.
+        let splitter = context
+            .create_channel_splitter_with_number_of_outputs(2)
+            .into_js_result()?;
+
+        // Create the envelope gain nodes for the left and right channels.
+        let left_to_left_gain = context.create_gain().into_js_result()?;
+        let left_to_right_gain = context.create_gain().into_js_result()?;
+        let right_to_left_gain = context.create_gain().into_js_result()?;
+        let right_to_right_gain = context.create_gain().into_js_result()?;
+
+        let merger: web_sys::AudioNode = context
+            .create_channel_merger_with_number_of_inputs(2)
+            .into_js_result()?
+            .into();
+
+        // Wire up the nodes.
+        // Note that for mono tracks, we want to use channel 0 (left) for both the left and right.
+        self.node.disconnect().warn_on_error();
+        self.envelope_node.disconnect().warn_on_error();
+        self.envelope_node
+            .connect_with_audio_node(&splitter)
+            .into_js_result()?;
+        splitter
+            .connect_with_audio_node_and_output(&left_to_left_gain, 0)
+            .into_js_result()?;
+        splitter
+            .connect_with_audio_node_and_output(&left_to_right_gain, 0)
+            .into_js_result()?;
+        splitter
+            .connect_with_audio_node_and_output(&right_to_left_gain, if is_stereo { 1 } else { 0 })
+            .into_js_result()?;
+        splitter
+            .connect_with_audio_node_and_output(&right_to_right_gain, if is_stereo { 1 } else { 0 })
+            .into_js_result()?;
+
+        left_to_left_gain
+            .connect_with_audio_node_and_output_and_input(&merger, 0, 0)
+            .into_js_result()?;
+        left_to_right_gain
+            .connect_with_audio_node_and_output_and_input(&merger, 0, 1)
+            .into_js_result()?;
+        right_to_left_gain
+            .connect_with_audio_node_and_output_and_input(&merger, 0, 0)
+            .into_js_result()?;
+        right_to_right_gain
+            .connect_with_audio_node_and_output_and_input(&merger, 0, 1)
+            .into_js_result()?;
+
+        merger
+            .connect_with_audio_node(&context.destination())
+            .warn_on_error();
+
+        self.node = merger;
+        self.sound_transform_nodes = SoundTransformNodes::Transform {
+            left_to_left_gain,
+            left_to_right_gain,
+            right_to_left_gain,
+            right_to_right_gain,
+        };
+        Ok(())
+    }
+}
+
+/// The gain nodes controlling the sound transform for this sound.
+/// Because most sounds will be untransformed, we lazily instantiate
+/// this only when necessary to play a transformed sound.
+enum SoundTransformNodes {
+    /// No transform is applied to this sound.
+    None,
+
+    /// This sound has volume applied to it.
+    Volume { gain: GainNode },
+
+    /// This sound has a full transform applied to it.
+    Transform {
+        left_to_left_gain: GainNode,
+        left_to_right_gain: GainNode,
+        right_to_left_gain: GainNode,
+        right_to_right_gain: GainNode,
     },
 }
 
@@ -121,7 +293,9 @@ type Error = Box<dyn std::error::Error>;
 
 impl WebAudioBackend {
     pub fn new() -> Result<Self, Error> {
+        log::error!("A");
         let context = AudioContext::new().map_err(|_| "Unable to create AudioContext")?;
+        log::error!("B");
 
         // Deduce the minimum sample rate for this browser.
         let mut min_sample_rate = 44100;
@@ -137,8 +311,8 @@ impl WebAudioBackend {
         Ok(Self {
             context,
             sounds: Arena::new(),
-            stream_data: FnvHashMap::default(),
-            id_to_sound: FnvHashMap::default(),
+            preload_stream_data: FnvHashMap::default(),
+            next_stream_id: 0,
             left_samples: vec![],
             right_samples: vec![],
             frame_rate: 1.0,
@@ -231,10 +405,12 @@ impl WebAudioBackend {
                 let instance = SoundInstance {
                     handle: Some(handle),
                     format: sound.format.clone(),
-                    instance_type: SoundInstanceType::AudioBuffer {
+                    instance_type: SoundInstanceType::AudioBuffer(AudioBufferInstance {
+                        envelope_node: node.clone(),
                         node,
                         buffer_source_node: buffer_source_node.clone(),
-                    },
+                        sound_transform_nodes: SoundTransformNodes::None,
+                    }),
                 };
                 let instance_handle = SOUND_INSTANCES.with(|instances| {
                     let mut instances = instances.borrow_mut();
@@ -515,11 +691,18 @@ impl WebAudioBackend {
             .unwrap();
         let audio_buffer = Rc::new(RefCell::new(audio_buffer));
 
-        let data_array = unsafe { js_sys::Uint8Array::view(&audio_data[..]) };
-        let array_buffer = data_array.buffer().slice_with_end(
-            data_array.byte_offset(),
-            data_array.byte_offset() + data_array.byte_length(),
-        );
+        // Clone the audio data into an ArrayBuffer
+        // SAFETY: (compare with the docs for `Uint8Array::view`)
+        // - We don't resize WASMs backing buffer before the view is cloned
+        // - We don't mutate `data_array`
+        // - Since we clone the buffer, its lifetime is correctly disconnected from `audio_data`
+        let array_buffer = {
+            let data_array = unsafe { js_sys::Uint8Array::view(audio_data) };
+            data_array.buffer().slice_with_end(
+                data_array.byte_offset(),
+                data_array.byte_offset() + data_array.byte_length(),
+            )
+        };
 
         NUM_SOUNDS_LOADING.with(|n| n.set(n.get() + 1));
 
@@ -612,18 +795,19 @@ impl AudioBackend for WebAudioBackend {
             )?),
             num_sample_frames: sound.num_samples,
             skip_sample_frames,
+            stream_segments: vec![],
         };
         Ok(self.sounds.insert(sound))
     }
 
     fn preload_sound_stream_head(
         &mut self,
-        clip_id: swf::CharacterId,
-        _stream_start_frame: u16,
         stream_info: &swf::SoundStreamHead,
-    ) {
-        self.stream_data
-            .entry(clip_id)
+    ) -> Option<PreloadStreamHandle> {
+        let stream_id = self.next_stream_id;
+        self.next_stream_id = self.next_stream_id.wrapping_add(1);
+        self.preload_stream_data
+            .entry(stream_id)
             .or_insert_with(|| StreamData {
                 format: stream_info.stream_format.clone(),
                 audio_data: vec![],
@@ -634,15 +818,16 @@ impl AudioBackend for WebAudioBackend {
                 stream_segments: vec![],
                 last_clip_frame: 0,
             });
+        Some(stream_id)
     }
 
     fn preload_sound_stream_block(
         &mut self,
-        clip_id: swf::CharacterId,
+        stream_id: PreloadStreamHandle,
         clip_frame: u16,
         audio_data: &[u8],
     ) {
-        if let Some(stream) = self.stream_data.get_mut(&clip_id) {
+        if let Some(stream) = self.preload_stream_data.get_mut(&stream_id) {
             // Handle gaps in streaming audio. Store the offsets for each stream segment.
             if stream.audio_data.is_empty() || stream.last_clip_frame + 1 != clip_frame {
                 let sample_mult = 44100 / stream.format.sample_rate;
@@ -687,8 +872,8 @@ impl AudioBackend for WebAudioBackend {
         }
     }
 
-    fn preload_sound_stream_end(&mut self, clip_id: swf::CharacterId) {
-        let stream_data = self.stream_data.remove(&clip_id);
+    fn preload_sound_stream_end(&mut self, stream_id: PreloadStreamHandle) -> Option<SoundHandle> {
+        let stream_data = self.preload_stream_data.remove(&stream_id);
 
         if let Some(mut stream) = stream_data {
             if !stream.audio_data.is_empty() {
@@ -703,18 +888,19 @@ impl AudioBackend for WebAudioBackend {
                         None
                     },
                 ) {
-                    stream.audio_data = vec![];
-                    self.stream_data.insert(clip_id, stream.clone());
                     let handle = self.sounds.insert(Sound {
                         format: stream.format,
                         source: SoundSource::AudioBuffer(audio_buffer),
                         num_sample_frames: stream.num_sample_frames,
                         skip_sample_frames: stream.skip_sample_frames,
+                        stream_segments: stream.stream_segments,
                     });
-                    self.id_to_sound.insert(clip_id, handle);
+                    return Some(handle);
                 }
             }
         }
+
+        None
     }
 
     fn start_sound(
@@ -728,25 +914,24 @@ impl AudioBackend for WebAudioBackend {
 
     fn start_stream(
         &mut self,
-        clip_id: swf::CharacterId,
+        stream_handle: Option<SoundHandle>,
         clip_frame: u16,
         _clip_data: ruffle_core::tag_utils::SwfSlice,
         _stream_info: &swf::SoundStreamHead,
-    ) -> Result<AudioStreamHandle, Error> {
-        if let Some(&handle) = self.id_to_sound.get(&clip_id) {
+    ) -> Result<SoundInstanceHandle, Error> {
+        if let Some(stream) = stream_handle {
             let mut sound_info = None;
             if clip_frame > 1 {
-                if let Some(stream_data) = self.stream_data.get(&clip_id) {
+                if let Some(sound) = self.sounds.get(stream) {
                     // Figure out the frame and sample where this stream segment first starts.
-                    let start_pos = match stream_data
+                    let start_pos = match sound
                         .stream_segments
                         .binary_search_by(|(f, _)| f.cmp(&clip_frame))
                     {
-                        Ok(i) => stream_data.stream_segments[i].1,
+                        Ok(i) => sound.stream_segments[i].1,
                         Err(i) => {
                             if i > 0 {
-                                let (segment_frame, segment_sample) =
-                                    stream_data.stream_segments[i - 1];
+                                let (segment_frame, segment_sample) = sound.stream_segments[i - 1];
                                 let frames_skipped = clip_frame.saturating_sub(segment_frame);
                                 let samples_per_frame = 44100.0 / self.frame_rate;
                                 segment_sample
@@ -765,10 +950,10 @@ impl AudioBackend for WebAudioBackend {
                     });
                 }
             }
-            let handle = self.start_sound_internal(handle, sound_info.as_ref())?;
-            Ok(handle)
+            let instance = self.start_sound_internal(stream, sound_info.as_ref())?;
+            Ok(instance)
         } else {
-            let msg = format!("Missing stream for clip {}", clip_id);
+            let msg = format!("Missing stream for sound ID {:?}", stream_handle);
             log::error!("{}", msg);
             Err(msg.into())
         }
@@ -778,13 +963,6 @@ impl AudioBackend for WebAudioBackend {
         SOUND_INSTANCES.with(|instances| {
             let mut instances = instances.borrow_mut();
             instances.remove(sound);
-        })
-    }
-
-    fn stop_stream(&mut self, stream: AudioStreamHandle) {
-        SOUND_INSTANCES.with(|instances| {
-            let mut instances = instances.borrow_mut();
-            instances.remove(stream);
         })
     }
 
@@ -816,21 +994,15 @@ impl AudioBackend for WebAudioBackend {
         })
     }
 
-    fn stop_sounds_with_handle(&mut self, handle: SoundHandle) {
-        SOUND_INSTANCES.with(|instances| {
-            let mut instances = instances.borrow_mut();
-            let handle = Some(handle);
-            instances.retain(|_, instance| instance.handle != handle);
-        })
-    }
-
-    fn is_sound_playing_with_handle(&mut self, handle: SoundHandle) -> bool {
+    fn get_sound_position(&self, instance: SoundInstanceHandle) -> Option<u32> {
         SOUND_INSTANCES.with(|instances| {
             let instances = instances.borrow();
-            let handle = Some(handle);
-            instances
-                .iter()
-                .any(|(_, instance)| instance.handle == handle)
+            if let Some(_instance) = instances.get(instance) {
+                // TODO: Return actual position
+                Some(0)
+            } else {
+                None
+            }
         })
     }
 
@@ -843,6 +1015,17 @@ impl AudioBackend for WebAudioBackend {
         } else {
             None
         }
+    }
+
+    fn set_sound_transform(&mut self, instance: SoundInstanceHandle, transform: SoundTransform) {
+        SOUND_INSTANCES.with(|instances| {
+            let mut instances = instances.borrow_mut();
+            if let Some(instance) = instances.get_mut(instance) {
+                if let SoundInstanceType::AudioBuffer(sound) = &mut instance.instance_type {
+                    sound.set_transform(&self.context, &transform);
+                }
+            }
+        })
     }
 }
 

@@ -100,10 +100,16 @@ export class RufflePlayer extends HTMLElement {
     private container: HTMLElement;
     private playButton: HTMLElement;
     private unmuteOverlay: HTMLElement;
-    private rightClickMenu: HTMLElement;
+
+    // Firefox has a read-only "contextMenu" property,
+    // so avoid shadowing it.
+    private contextMenuElement: HTMLElement;
+    private hasContextMenu = false;
+
     private swfUrl?: string;
     private instance: Ruffle | null;
     private _trace_observer: ((message: string) => void) | null;
+    private lastActivePlayingState: boolean;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private ruffleConstructor: Promise<{ new (...args: any[]): Ruffle }>;
@@ -150,14 +156,9 @@ export class RufflePlayer extends HTMLElement {
             this.unmuteOverlayClicked.bind(this)
         );
 
-        this.rightClickMenu = this.shadow.getElementById("right_click_menu")!;
-
-        this.addEventListener(
-            "contextmenu",
-            this.openRightClickMenu.bind(this)
-        );
-
-        window.addEventListener("click", this.hideRightClickMenu.bind(this));
+        this.contextMenuElement = this.shadow.getElementById("context-menu")!;
+        this.addEventListener("contextmenu", this.showContextMenu.bind(this));
+        window.addEventListener("click", this.hideContextMenu.bind(this));
 
         this.instance = null;
         this.allowScriptAccess = false;
@@ -165,7 +166,40 @@ export class RufflePlayer extends HTMLElement {
 
         this.ruffleConstructor = loadRuffle();
 
+        this.lastActivePlayingState = false;
+        this.setupPauseOnTabHidden();
+
         return this;
+    }
+
+    /**
+     * Setup event listener to detect when tab is not active to pause instance playback.
+     * this.instance.play() is called when the tab becomes visible only if the
+     * the instance was not paused before tab became hidden.
+     *
+     * See:
+     *      https://developer.mozilla.org/en-US/docs/Web/API/Page_Visibility_API
+     * @ignore
+     * @internal
+     */
+    setupPauseOnTabHidden(): void {
+        document.addEventListener(
+            "visibilitychange",
+            () => {
+                if (!this.instance) return;
+
+                // Tab just changed to be inactive. Record whether instance was playing.
+                if (document.hidden) {
+                    this.lastActivePlayingState = this.instance.is_playing();
+                    this.instance.pause();
+                }
+                // Play only if instance was playing originally.
+                if (!document.hidden && this.lastActivePlayingState === true) {
+                    this.instance.play();
+                }
+            },
+            false
+        );
     }
 
     /**
@@ -435,51 +469,53 @@ export class RufflePlayer extends HTMLElement {
             throw error;
         }
 
-        //TODO: Actually stream files...
+        if (!this.isConnected || this.isUnusedFallbackObject()) {
+            console.warn(
+                "Ignoring attempt to play a disconnected or suspended Ruffle element"
+            );
+            return;
+        }
+
         try {
-            if (this.isConnected && !this.isUnusedFallbackObject()) {
-                const config: BaseLoadOptions = {
-                    ...(window.RufflePlayer?.config ?? {}),
-                    ...this.config,
-                    ...options,
+            const config: BaseLoadOptions = {
+                ...(window.RufflePlayer?.config ?? {}),
+                ...this.config,
+                ...options,
+            };
+
+            this.hasContextMenu = config.contextMenu !== false;
+
+            // Pre-emptively set background color of container while Ruffle/SWF loads.
+            if (config.backgroundColor) {
+                this.container.style.backgroundColor = config.backgroundColor;
+            }
+
+            await this.ensureFreshInstance(config);
+
+            if ("url" in options) {
+                console.log(`Loading SWF file ${options.url}`);
+                try {
+                    this.swfUrl = new URL(
+                        options.url,
+                        document.location.href
+                    ).href;
+                } catch {
+                    this.swfUrl = options.url;
+                }
+
+                const parameters = {
+                    ...sanitizeParameters(
+                        options.url.substring(options.url.indexOf("?"))
+                    ),
+                    ...sanitizeParameters(options.parameters),
                 };
 
-                // Pre-emptively set background color of container while Ruffle/SWF loads.
-                if (config.backgroundColor) {
-                    this.container.style.backgroundColor =
-                        config.backgroundColor;
-                }
-
-                await this.ensureFreshInstance(config);
-
-                if ("url" in options) {
-                    console.log(`Loading SWF file ${options.url}`);
-                    try {
-                        this.swfUrl = new URL(
-                            options.url,
-                            document.location.href
-                        ).href;
-                    } catch {
-                        this.swfUrl = options.url;
-                    }
-
-                    const parameters = {
-                        ...sanitizeParameters(
-                            options.url.substring(options.url.indexOf("?"))
-                        ),
-                        ...sanitizeParameters(options.parameters),
-                    };
-                    this.instance!.stream_from(options.url, parameters);
-                } else if ("data" in options) {
-                    console.log("Loading SWF data");
-                    this.instance!.load_data(
-                        new Uint8Array(options.data),
-                        sanitizeParameters(options.parameters)
-                    );
-                }
-            } else {
-                console.warn(
-                    "Ignoring attempt to play a disconnected or suspended Ruffle element"
+                this.instance!.stream_from(options.url, parameters);
+            } else if ("data" in options) {
+                console.log("Loading SWF data");
+                this.instance!.load_data(
+                    new Uint8Array(options.data),
+                    sanitizeParameters(options.parameters)
                 );
             }
         } catch (err) {
@@ -567,7 +603,13 @@ export class RufflePlayer extends HTMLElement {
             }
         }
         items.push({
-            text: `Ruffle %VERSION_NAME%`,
+            text: "SEPARATOR",
+            onClick() {
+                // do nothing.
+            },
+        });
+        items.push({
+            text: `About Ruffle (%VERSION_NAME%)`,
             onClick() {
                 window.open(RUFFLE_ORIGIN, "_blank");
             },
@@ -575,41 +617,57 @@ export class RufflePlayer extends HTMLElement {
         return items;
     }
 
-    private openRightClickMenu(e: MouseEvent): void {
+    private showContextMenu(e: MouseEvent): void {
         e.preventDefault();
 
-        // Clear all `right_click_menu` items.
-        while (this.rightClickMenu.firstChild) {
-            this.rightClickMenu.removeChild(this.rightClickMenu.firstChild);
+        if (!this.hasContextMenu) {
+            return;
         }
 
-        // Populate `right_click_menu` items.
+        // Clear all context menu items.
+        while (this.contextMenuElement.firstChild) {
+            this.contextMenuElement.removeChild(
+                this.contextMenuElement.firstChild
+            );
+        }
+
+        // Populate context menu items.
         for (const { text, onClick } of this.contextMenuItems()) {
-            const element = document.createElement("li");
-            element.className = "menu_item active";
-            element.textContent = text;
-            element.addEventListener("click", onClick);
-            this.rightClickMenu.appendChild(element);
+            if (text == "SEPARATOR") {
+                const element = document.createElement("li");
+                element.className = "menu_separator";
+                const hr = document.createElement("hr");
+                element.appendChild(hr);
+                this.contextMenuElement.appendChild(element);
+            } else {
+                const element = document.createElement("li");
+                element.className = "menu_item active";
+                element.textContent = text;
+                element.addEventListener("click", onClick);
+                this.contextMenuElement.appendChild(element);
+            }
         }
 
-        // Place `right_click_menu` in the top-left corner, so
+        // Place a context menu in the top-left corner, so
         // its `clientWidth` and `clientHeight` are not clamped.
-        this.rightClickMenu.style.left = "0";
-        this.rightClickMenu.style.top = "0";
-        this.rightClickMenu.style.display = "block";
+        this.contextMenuElement.style.left = "0";
+        this.contextMenuElement.style.top = "0";
+        this.contextMenuElement.style.display = "block";
 
         const rect = this.getBoundingClientRect();
         const x = e.clientX - rect.x;
         const y = e.clientY - rect.y;
-        const maxX = rect.width - this.rightClickMenu.clientWidth - 1;
-        const maxY = rect.height - this.rightClickMenu.clientHeight - 1;
+        const maxX = rect.width - this.contextMenuElement.clientWidth - 1;
+        const maxY = rect.height - this.contextMenuElement.clientHeight - 1;
 
-        this.rightClickMenu.style.left = Math.floor(Math.min(x, maxX)) + "px";
-        this.rightClickMenu.style.top = Math.floor(Math.min(y, maxY)) + "px";
+        this.contextMenuElement.style.left =
+            Math.floor(Math.min(x, maxX)) + "px";
+        this.contextMenuElement.style.top =
+            Math.floor(Math.min(y, maxY)) + "px";
     }
 
-    private hideRightClickMenu(): void {
-        this.rightClickMenu.style.display = "none";
+    private hideContextMenu(): void {
+        this.contextMenuElement.style.display = "none";
     }
 
     /**

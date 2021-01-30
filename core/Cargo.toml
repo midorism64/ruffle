@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 bitstream-io = "1.0.0"
-flate2 = "1.0.19"
+flate2 = "1.0.20"
 fnv = "1.0.7"
 gc-arena = "0.2.0"
 gc-arena-derive = "0.2.0"
@@ -34,11 +34,11 @@ chrono = "0.4"
 num-traits = "0.2"
 instant = "0.1"
 encoding_rs = "0.8.26"
-rand = { version = "0.8.2", features = ["std", "small_rng"], default-features = false }
-serde = { version = "1.0.121", features = ["derive"], optional = true }
+rand = { version = "0.8.3", features = ["std", "small_rng"], default-features = false }
+serde = { version = "1.0.123", features = ["derive"], optional = true }
 
 [dependencies.jpeg-decoder]
-version = "0.1.20"
+version = "0.1.22"
 default-features = false # can't use rayon on web
 
 [dev-dependencies]
