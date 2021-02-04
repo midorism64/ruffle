@@ -1,12 +1,13 @@
 //! `EditText` display object and support code.
+
 use crate::avm1::activation::{Activation, ActivationIdentifier};
 use crate::avm1::{Avm1, AvmString, Object, StageObject, TObject, Value};
-use crate::backend::input::MouseCursor;
+use crate::backend::ui::MouseCursor;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::drawing::Drawing;
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode};
-use crate::font::{round_down_to_pixel, Glyph};
+use crate::font::{round_down_to_pixel, Glyph, TextRenderSettings};
 use crate::html::{BoxBounds, FormatSpans, LayoutBox, LayoutContent, TextFormat};
 use crate::prelude::*;
 use crate::shape_utils::DrawCommand;
@@ -86,6 +87,9 @@ pub struct EditTextData<'gc> {
     /// If the text is word-wrapped.
     is_word_wrap: bool,
 
+    /// If this is a password input field
+    is_password: bool,
+
     /// The color of the background fill. Only applied when has_border.
     background_color: u32,
 
@@ -135,6 +139,9 @@ pub struct EditTextData<'gc> {
 
     /// Whether or not this EditText has the current keyboard focus
     has_focus: bool,
+
+    /// Which rendering engine this text field will use.
+    render_settings: TextRenderSettings,
 }
 
 impl<'gc> EditText<'gc> {
@@ -147,6 +154,7 @@ impl<'gc> EditText<'gc> {
         let is_multiline = swf_tag.is_multiline;
         let is_word_wrap = swf_tag.is_word_wrap;
         let is_selectable = swf_tag.is_selectable;
+        let is_password = swf_tag.is_password;
         let is_editable = !swf_tag.is_read_only;
         let is_html = swf_tag.is_html;
         let document = XMLDocument::new(context.gc_context);
@@ -170,6 +178,10 @@ impl<'gc> EditText<'gc> {
         if !is_multiline {
             let filtered = text_spans.text().replace("\n", "");
             text_spans.replace_text(0, text_spans.text().len(), &filtered, Some(&default_format));
+        }
+
+        if is_password {
+            text_spans.hide_text();
         }
 
         let bounds: BoundingBox = swf_tag.bounds.clone().into();
@@ -239,6 +251,7 @@ impl<'gc> EditText<'gc> {
                 is_selectable,
                 is_editable,
                 is_word_wrap,
+                is_password,
                 background_color,
                 has_border,
                 border_color,
@@ -255,6 +268,7 @@ impl<'gc> EditText<'gc> {
                 firing_variable_binding: false,
                 selection: None,
                 has_focus: false,
+                render_settings: Default::default(),
             },
         ));
 
@@ -457,6 +471,15 @@ impl<'gc> EditText<'gc> {
 
     pub fn is_multiline(self) -> bool {
         self.0.read().is_multiline
+    }
+
+    pub fn is_password(self) -> bool {
+        self.0.read().is_password
+    }
+
+    pub fn set_password(self, is_password: bool, context: &mut UpdateContext<'_, 'gc, '_>) {
+        self.0.write(context.gc_context).is_password = is_password;
+        self.relayout(context);
     }
 
     pub fn set_multiline(self, is_multiline: bool, context: &mut UpdateContext<'_, 'gc, '_>) {
@@ -696,6 +719,14 @@ impl<'gc> EditText<'gc> {
         let movie = edit_text.static_data.swf.clone();
         let width = edit_text.bounds.width() - Twips::from_pixels(Self::INTERNAL_PADDING * 2.0);
 
+        if edit_text.is_password {
+            // If the text is a password, hide the text
+            edit_text.text_spans.hide_text();
+        } else if edit_text.text_spans.has_displayed_text() {
+            // If it is not a password and has displayed text, we can clear the displayed text
+            edit_text.text_spans.clear_displayed_text();
+        }
+
         let (new_layout, intrinsic_bounds) = LayoutBox::lower_from_text_spans(
             &edit_text.text_spans,
             context,
@@ -798,7 +829,7 @@ impl<'gc> EditText<'gc> {
         // Instead, we embed an SWF version of Noto Sans to use as the "device font", and render
         // it the same as any other SWF outline text.
         if let Some((text, _tf, font, params, color)) =
-            lbox.as_renderable_text(edit_text.text_spans.text())
+            lbox.as_renderable_text(edit_text.text_spans.displayed_text())
         {
             let baseline_adjustment =
                 font.get_baseline_for_height(params.height()) - params.height();
@@ -1032,6 +1063,14 @@ impl<'gc> EditText<'gc> {
         } else {
             text.selection = None;
         }
+    }
+
+    pub fn set_render_settings(
+        self,
+        gc_context: MutationContext<'gc, '_>,
+        settings: TextRenderSettings,
+    ) {
+        self.0.write(gc_context).render_settings = settings
     }
 
     pub fn screen_position_to_index(self, position: (Twips, Twips)) -> Option<usize> {
@@ -1521,27 +1560,27 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
                     let length = text.len();
                     match key_code {
                         ButtonKeyCode::Left => {
-                            if (context.input.is_key_down(KeyCode::Shift) || selection.is_caret())
+                            if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
                                 && selection.to > 0
                             {
                                 selection.to = string_utils::prev_char_boundary(text, selection.to);
-                                if !context.input.is_key_down(KeyCode::Shift) {
+                                if !context.ui.is_key_down(KeyCode::Shift) {
                                     selection.from = selection.to;
                                 }
-                            } else if !context.input.is_key_down(KeyCode::Shift) {
+                            } else if !context.ui.is_key_down(KeyCode::Shift) {
                                 selection.to = selection.start();
                                 selection.from = selection.to;
                             }
                         }
                         ButtonKeyCode::Right => {
-                            if (context.input.is_key_down(KeyCode::Shift) || selection.is_caret())
+                            if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
                                 && selection.to < length
                             {
                                 selection.to = string_utils::next_char_boundary(text, selection.to);
-                                if !context.input.is_key_down(KeyCode::Shift) {
+                                if !context.ui.is_key_down(KeyCode::Shift) {
                                     selection.from = selection.to;
                                 }
-                            } else if !context.input.is_key_down(KeyCode::Shift) {
+                            } else if !context.ui.is_key_down(KeyCode::Shift) {
                                 selection.to = selection.end();
                                 selection.from = selection.to;
                             }

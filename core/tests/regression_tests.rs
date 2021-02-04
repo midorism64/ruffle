@@ -3,13 +3,14 @@
 //! Trace output can be compared with correct output from the official Flash Player.
 
 use approx::assert_relative_eq;
-use ruffle_core::backend::locale::NullLocaleBackend;
-use ruffle_core::backend::log::LogBackend;
-use ruffle_core::backend::navigator::{NullExecutor, NullNavigatorBackend};
-use ruffle_core::backend::storage::MemoryStorageBackend;
-use ruffle_core::backend::ui::NullUiBackend;
 use ruffle_core::backend::{
-    audio::NullAudioBackend, input::NullInputBackend, render::NullRenderer,
+    audio::NullAudioBackend,
+    locale::NullLocaleBackend,
+    log::LogBackend,
+    navigator::{NullExecutor, NullNavigatorBackend},
+    render::NullRenderer,
+    storage::MemoryStorageBackend,
+    ui::NullUiBackend,
 };
 use ruffle_core::context::UpdateContext;
 use ruffle_core::external::Value as ExternalValue;
@@ -260,6 +261,7 @@ swf_tests! {
     (edittext_leading, "avm1/edittext_leading", 1),
     #[ignore] (edittext_newlines, "avm1/edittext_newlines", 1),
     (edittext_html_entity, "avm1/edittext_html_entity", 1),
+    (edittext_password, "avm1/edittext_password", 1),
     #[ignore] (edittext_html_roundtrip, "avm1/edittext_html_roundtrip", 1),
     (edittext_newline_stripping, "avm1/edittext_newline_stripping", 1),
     (define_local, "avm1/define_local", 1),
@@ -316,6 +318,7 @@ swf_tests! {
     (bitmap_data, "avm1/bitmap_data", 1),
     (bitmap_data_noise, "avm1/bitmap_data_noise", 1),
     (array_call_method, "avm1/array_call_method", 1),
+    (bad_placeobject_clipaction, "avm1/bad_placeobject_clipaction", 2),
     (bad_swf_tag_past_eof, "avm1/bad_swf_tag_past_eof", 1),
     (sound, "avm1/sound", 1),
     (action_to_integer, "avm1/action_to_integer", 1),
@@ -719,7 +722,6 @@ fn run_swf(
         Box::new(NullRenderer),
         Box::new(NullAudioBackend::new()),
         Box::new(NullNavigatorBackend::with_base_path(base_path, channel)),
-        Box::new(NullInputBackend::new()),
         Box::new(MemoryStorageBackend::default()),
         Box::new(NullLocaleBackend::new()),
         Box::new(TestLogBackend::new(trace_output.clone())),
@@ -810,4 +812,8 @@ impl ExternalInterfaceProvider for ExternalInterfaceTestProvider {
     }
 
     fn on_callback_available(&self, _name: &str) {}
+
+    fn on_fs_command(&self, _command: &str, _args: &str) -> bool {
+        false
+    }
 }

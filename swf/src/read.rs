@@ -360,7 +360,9 @@ impl<'a> Reader<'a> {
         let tag = match TagCode::from_u16(tag_code) {
             Some(TagCode::End) => Tag::End,
             Some(TagCode::ShowFrame) => Tag::ShowFrame,
-            Some(TagCode::CsmTextSettings) => tag_reader.read_csm_text_settings()?,
+            Some(TagCode::CsmTextSettings) => {
+                Tag::CsmTextSettings(tag_reader.read_csm_text_settings()?)
+            }
             Some(TagCode::DefineBinaryData) => {
                 let id = tag_reader.read_u16()?;
                 tag_reader.read_u32()?; // Reserved
@@ -947,13 +949,13 @@ impl<'a> Reader<'a> {
         ))
     }
 
-    fn read_csm_text_settings(&mut self) -> Result<Tag<'a>> {
+    pub fn read_csm_text_settings(&mut self) -> Result<CsmTextSettings> {
         let id = self.read_character_id()?;
         let flags = self.read_u8()?;
         let thickness = self.read_f32()?;
         let sharpness = self.read_f32()?;
         self.read_u8()?; // Reserved (0).
-        Ok(Tag::CsmTextSettings(CsmTextSettings {
+        Ok(CsmTextSettings {
             id,
             use_advanced_rendering: flags & 0b01000000 != 0,
             grid_fit: match flags & 0b11_000 {
@@ -964,7 +966,7 @@ impl<'a> Reader<'a> {
             },
             thickness,
             sharpness,
-        }))
+        })
     }
 
     pub fn read_frame_label(&mut self, length: usize) -> Result<FrameLabel<'a>> {
@@ -2173,7 +2175,14 @@ impl<'a> Reader<'a> {
         event_list.set(ClipEventFlag::LOAD, flags & 0b0000_0001 != 0);
 
         if self.version > 5 {
-            let flags = self.read_u8()?;
+            // There are SWFs in the wild with malformed final ClipActions that is only two bytes
+            // instead of four bytes (see #2899). Handle this gracefully to allow the tag to run.
+            // TODO: We may need a more general way to handle truncated tags, since this has
+            // occurred in a few different places.
+            // Allow for only two bytes in the clip action tag.
+            let flags = self.read_u8().unwrap_or_default();
+            let flags2 = self.read_u8().unwrap_or_default();
+            let _ = self.read_u8();
             event_list.set(ClipEventFlag::DRAG_OVER, flags & 0b1000_0000 != 0);
             event_list.set(ClipEventFlag::ROLL_OUT, flags & 0b0100_0000 != 0);
             event_list.set(ClipEventFlag::ROLL_OVER, flags & 0b0010_0000 != 0);
@@ -2183,14 +2192,11 @@ impl<'a> Reader<'a> {
             event_list.set(ClipEventFlag::INITIALIZE, flags & 0b0000_0010 != 0);
             event_list.set(ClipEventFlag::DATA, flags & 0b0000_0001 != 0);
 
-            let flags = self.read_u8()?;
             // Construct was only added in SWF7, but it's not version-gated;
             // Construct events will still fire in SWF6 in a v7+ player. (#1424)
-            event_list.set(ClipEventFlag::CONSTRUCT, flags & 0b0000_0100 != 0);
-            event_list.set(ClipEventFlag::KEY_PRESS, flags & 0b0000_0010 != 0);
-            event_list.set(ClipEventFlag::DRAG_OUT, flags & 0b0000_0001 != 0);
-
-            self.read_u8()?;
+            event_list.set(ClipEventFlag::CONSTRUCT, flags2 & 0b0000_0100 != 0);
+            event_list.set(ClipEventFlag::KEY_PRESS, flags2 & 0b0000_0010 != 0);
+            event_list.set(ClipEventFlag::DRAG_OUT, flags2 & 0b0000_0001 != 0);
         } else {
             // SWF19 pp. 48-50: For SWFv5, the ClipEventFlags only had 2 bytes of flags,
             // with the 2nd byte reserved (all 0).
