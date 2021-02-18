@@ -13,7 +13,7 @@ use crate::avm2::string::AvmString;
 use crate::avm2::value::Value;
 use crate::avm2::{value, Avm2, Error};
 use crate::context::UpdateContext;
-use gc_arena::{Collect, Gc, GcCell, MutationContext};
+use gc_arena::{Gc, GcCell, MutationContext};
 use smallvec::SmallVec;
 use std::io::Cursor;
 use swf::avm2::read::Reader;
@@ -63,13 +63,13 @@ enum FrameControl<'gc> {
 }
 
 /// Represents a single activation of a given AVM2 function or keyframe.
-#[derive(Collect)]
-#[collect(no_drop)]
 pub struct Activation<'a, 'gc: 'a, 'gc_context: 'a> {
     /// The immutable value of `this`.
+    #[allow(dead_code)]
     this: Option<Object<'gc>>,
 
     /// The arguments this function was called by.
+    #[allow(dead_code)]
     arguments: Option<Object<'gc>>,
 
     /// Flags that the current activation frame is being executed and has a
@@ -87,9 +87,11 @@ pub struct Activation<'a, 'gc: 'a, 'gc_context: 'a> {
     ///
     /// A return value of `None` indicates that the called function is still
     /// executing. Functions that do not return instead return `Undefined`.
+    #[allow(dead_code)]
     return_value: Option<Value<'gc>>,
 
     /// The current local scope, implemented as a bare object.
+    #[allow(dead_code)]
     local_scope: Object<'gc>,
 
     /// The current scope stack.
@@ -673,6 +675,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 } => self.op_debug(method, is_local_register, register_name, register),
                 Op::DebugFile { file_name } => self.op_debug_file(method, file_name),
                 Op::DebugLine { line_num } => self.op_debug_line(line_num),
+                Op::TypeOf => self.op_type_of(),
                 _ => self.unknown_op(op),
             };
 
@@ -743,7 +746,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn op_push_nan(&mut self) -> Result<FrameControl<'gc>, Error> {
-        self.context.avm2.push(std::f64::NAN);
+        self.context.avm2.push(f64::NAN);
         Ok(FrameControl::Continue)
     }
 
@@ -2249,6 +2252,50 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let is_instance_of = value.is_instance_of(self, type_object, false)?;
 
         self.context.avm2.push(is_instance_of);
+
+        Ok(FrameControl::Continue)
+    }
+
+    fn op_type_of(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let value = self.context.avm2.pop();
+
+        let type_name = match value {
+            Value::Undefined => "undefined",
+            Value::Null => "object",
+            Value::Bool(_) => "boolean",
+            Value::Number(_) | Value::Integer(_) | Value::Unsigned(_) => "number",
+            Value::Object(o) => {
+                // Subclasses always have a typeof = "object", must be a subclass if the prototype chain is > 2, or not a subclass if <=2
+                let is_not_subclass = matches!(
+                    o.proto().and_then(|p| p.proto()).and_then(|p| p.proto()),
+                    None
+                );
+
+                match o {
+                    Object::FunctionObject(_) => {
+                        if is_not_subclass {
+                            "function"
+                        } else {
+                            "object"
+                        }
+                    }
+                    Object::XmlObject(_) => {
+                        if is_not_subclass {
+                            "xml"
+                        } else {
+                            "object"
+                        }
+                    }
+                    _ => "object",
+                }
+            }
+            Value::String(_) => "string",
+        };
+
+        self.context.avm2.push(Value::String(AvmString::new(
+            self.context.gc_context,
+            type_name,
+        )));
 
         Ok(FrameControl::Continue)
     }

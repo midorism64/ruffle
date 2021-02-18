@@ -54,14 +54,17 @@ pub enum Compression {
     Lzma,
 }
 
-/// Most coordinates in an SWF file are represented in "twips".
-/// A twip is 1/20th of a pixel.
-///
-/// `Twips` is a type-safe wrapper type documenting where Twips are used
+/// A type-safe wrapper type documenting where "twips" are used
 /// in the SWF format.
 ///
-/// Use `Twips::from_pixels` and `Twips::to_pixels` to convert to and from
+/// A twip is 1/20th of a pixel.
+/// Most coordinates in an SWF file are represented in twips.
+///
+/// Use the [`from_pixels`] and [`to_pixels`] methods to convert to and from
 /// pixel values.
+///
+/// [`from_pixels`]: Twips::from_pixels
+/// [`to_pixels`]: Twips::to_pixels
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default, PartialOrd, Ord)]
 pub struct Twips(i32);
 
@@ -70,24 +73,66 @@ impl Twips {
     pub const TWIPS_PER_PIXEL: f64 = 20.0;
 
     /// Creates a new `Twips` object. Note that the `twips` value is in twips,
-    /// not pixels. Use `from_pixels` to convert from pixel units.
+    /// not pixels. Use the [`from_pixels`] method to convert from pixel units.
+    ///
+    /// [`from_pixels`]: Twips::from_pixels
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use swf::Twips;
+    ///
+    /// let twips = Twips::new(40);
+    /// ```
     pub fn new<T: Into<i32>>(twips: T) -> Self {
         Self(twips.into())
     }
 
-    /// Creates a new `Twips` object set to the value of 0.
+    /// Creates a new `Twips` object with a value of `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use swf::Twips;
+    ///
+    /// let twips = Twips::zero();
+    /// assert_eq!(twips.get(), 0);
+    /// ```
     pub fn zero() -> Self {
         Self(0)
     }
 
     /// Returns the number of twips.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use swf::Twips;
+    ///
+    /// let twips = Twips::new(47);
+    /// assert_eq!(twips.get(), 47);
+    /// ```
     pub fn get(self) -> i32 {
         self.0
     }
 
-    /// Converts the number of pixels into twips.
+    /// Converts the given number of `pixels` into twips.
     ///
-    /// This may be a lossy conversion; any precision less than a twip (1/20 pixels) is truncated.
+    /// This may be a lossy conversion; any precision more than a twip (1/20 pixels) is truncated.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use swf::Twips;
+    ///
+    /// // 40 pixels is equivalent to 800 twips.
+    /// let twips = Twips::from_pixels(40.0);
+    /// assert_eq!(twips.get(), 800);
+    ///
+    /// // Output is truncated if more precise than a twip (1/20 pixels).
+    /// let twips = Twips::from_pixels(40.018);
+    /// assert_eq!(twips.get(), 800);
+    /// ```
     pub fn from_pixels(pixels: f64) -> Self {
         Self((pixels * Self::TWIPS_PER_PIXEL) as i32)
     }
@@ -95,10 +140,36 @@ impl Twips {
     /// Converts this twips value into pixel units.
     ///
     /// This is a lossless operation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use swf::Twips;
+    ///
+    /// // 800 twips is equivalent to 40 pixels.
+    /// let twips = Twips::new(800);
+    /// assert_eq!(twips.to_pixels(), 40.0);
+    ///
+    /// // Twips are sub-pixel: 713 twips represent 35.65 pixels.
+    /// let twips = Twips::new(713);
+    /// assert_eq!(twips.to_pixels(), 35.65);
+    /// ```
     pub fn to_pixels(self) -> f64 {
         f64::from(self.0) / Self::TWIPS_PER_PIXEL
     }
 
+    /// Saturating integer subtraction. Computes `self - rhs`, saturating at the numeric bounds
+    /// of [`i32`] instead of overflowing.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use swf::Twips;
+    ///
+    /// assert_eq!(Twips::new(40).saturating_sub(Twips::new(20)), Twips::new(20));
+    /// assert_eq!(Twips::new(i32::MIN).saturating_sub(Twips::new(5)), Twips::new(i32::MIN));
+    /// assert_eq!(Twips::new(i32::MAX).saturating_sub(Twips::new(-100)), Twips::new(i32::MAX));
+    /// ```
     pub fn saturating_sub(self, rhs: Self) -> Self {
         Self(self.0.saturating_sub(rhs.0))
     }
@@ -162,23 +233,60 @@ impl std::fmt::Display for Twips {
     }
 }
 
+/// A rectangular region defined by minimum
+/// and maximum x- and y-coordinate positions
+/// measured in [`Twips`].
 #[derive(Debug, PartialEq, Clone, Default)]
 pub struct Rectangle {
+    /// The minimum x-position of the rectangle.
     pub x_min: Twips,
+
+    /// The maximum x-position of the rectangle.
     pub x_max: Twips,
+
+    /// The minimum y-position of the rectangle.
     pub y_min: Twips,
+
+    /// The maximum y-position of the rectangle.
     pub y_max: Twips,
 }
 
+/// An RGBA (red, green, blue, alpha) color.
+///
+/// All components are stored as [`u8`] and have a color range of 0-255.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Color {
+    /// The red component value.
     pub r: u8,
+
+    /// The green component value.
     pub g: u8,
+
+    /// The blue component value.
     pub b: u8,
+
+    /// The alpha component value.
     pub a: u8,
 }
 
 impl Color {
+    /// Creates a `Color` from a 32-bit `rgb` value and an `alpha` value.
+    ///
+    /// The byte-ordering of the 32-bit `rgb` value is XXRRGGBB.
+    /// The most significant byte, represented by XX, is ignored;
+    /// the `alpha` value is provided separately.
+    /// This is followed by the the red (RR), green (GG), and blue (BB) components values,
+    /// respectively.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use swf::Color;
+    ///
+    /// let red = Color::from_rgb(0xFF0000, 255);
+    /// let green = Color::from_rgb(0x00FF00, 255);
+    /// let blue = Color::from_rgb(0x0000FF, 255);
+    /// ```
     pub fn from_rgb(rgb: u32, alpha: u8) -> Self {
         Self {
             r: ((rgb & 0xFF_0000) >> 16) as u8,
@@ -187,6 +295,29 @@ impl Color {
             a: alpha,
         }
     }
+
+    /// Converts the color to a 32-bit RGB value.
+    ///
+    /// The alpha value does not get stored.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    /// ```rust
+    /// use swf::Color;
+    ///
+    /// let color = Color::from_rgb(0xFF00FF, 255);
+    /// assert_eq!(color.to_rgb(), 0xFF00FF);
+    /// ```
+    ///
+    /// Alpha values do not get stored:
+    /// ```rust
+    /// use swf::Color;
+    ///
+    /// let color1 = Color::from_rgb(0xFF00FF, 255);
+    /// let color2 = Color::from_rgb(0xFF00FF, 0);
+    /// assert_eq!(color1.to_rgb(), color2.to_rgb());
+    /// ```
     pub fn to_rgb(&self) -> u32 {
         ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
     }
@@ -718,8 +849,8 @@ pub enum GradientSpread {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum GradientInterpolation {
-    RGB,
-    LinearRGB,
+    Rgb,
+    LinearRgb,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1096,8 +1227,9 @@ pub enum VideoDeblocking {
 pub enum VideoCodec {
     H263,
     ScreenVideo,
-    VP6,
-    VP6WithAlpha,
+    Vp6,
+    Vp6WithAlpha,
+    ScreenVideoV2,
 }
 
 #[derive(Clone, Debug, PartialEq)]

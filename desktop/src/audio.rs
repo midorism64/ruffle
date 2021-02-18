@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use generational_arena::Arena;
 use ruffle_core::backend::audio::decoders::{
-    self, AdpcmDecoder, Mp3Decoder, PcmDecoder, SeekableDecoder,
+    self, AdpcmDecoder, Mp3Decoder, NellymoserDecoder, PcmDecoder, SeekableDecoder,
 };
 use ruffle_core::backend::audio::{
     swf, AudioBackend, SoundHandle, SoundInstanceHandle, SoundTransform,
@@ -167,6 +167,9 @@ impl CpalAudioBackend {
                 format.sample_rate.into(),
                 data,
             )),
+            AudioCompression::Nellymoser => {
+                Box::new(NellymoserDecoder::new(data, format.sample_rate.into()))
+            }
             _ => {
                 let msg = format!(
                     "start_stream: Unhandled audio compression {:?}",
@@ -321,7 +324,7 @@ impl AudioBackend for CpalAudioBackend {
                 u16::from(swf_sound.data[0]) | (u16::from(swf_sound.data[1]) << 8);
             (skip_sample_frames, &swf_sound.data[2..])
         } else {
-            (0, &swf_sound.data[..])
+            (0, swf_sound.data)
         };
 
         let sound = Sound {
@@ -623,7 +626,7 @@ impl dasp::signal::Signal for EnvelopeSignal {
                 .next()
                 .clone()
                 .unwrap_or(swf::SoundEnvelopePoint {
-                    sample: std::u32::MAX,
+                    sample: u32::MAX,
                     left_volume: self.prev_point.left_volume,
                     right_volume: self.prev_point.right_volume,
                 });

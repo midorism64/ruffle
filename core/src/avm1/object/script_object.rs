@@ -72,6 +72,8 @@ impl<'gc> Watcher<'gc> {
 #[collect(no_drop)]
 pub struct ScriptObject<'gc>(GcCell<'gc, ScriptObjectData<'gc>>);
 
+#[derive(Collect)]
+#[collect(no_drop)]
 pub struct ScriptObjectData<'gc> {
     prototype: Option<Object<'gc>>,
     values: PropertyMap<Property<'gc>>,
@@ -79,16 +81,6 @@ pub struct ScriptObjectData<'gc> {
     type_of: &'static str,
     array: ArrayStorage<'gc>,
     watchers: PropertyMap<Watcher<'gc>>,
-}
-
-unsafe impl<'gc> Collect for ScriptObjectData<'gc> {
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.prototype.trace(cc);
-        self.values.trace(cc);
-        self.array.trace(cc);
-        self.interfaces.trace(cc);
-        self.watchers.trace(cc);
-    }
 }
 
 impl fmt::Debug for ScriptObjectData<'_> {
@@ -836,12 +828,13 @@ mod tests {
     use crate::avm1::{Avm1, Timers};
     use crate::avm2::Avm2;
     use crate::backend::audio::{AudioManager, NullAudioBackend};
-    use crate::backend::input::NullInputBackend;
     use crate::backend::locale::NullLocaleBackend;
     use crate::backend::log::NullLogBackend;
     use crate::backend::navigator::NullNavigatorBackend;
     use crate::backend::render::NullRenderer;
     use crate::backend::storage::MemoryStorageBackend;
+    use crate::backend::ui::NullUiBackend;
+    use crate::backend::video::NullVideoBackend;
     use crate::context::UpdateContext;
     use crate::display_object::MovieClip;
     use crate::focus_tracker::FocusTracker;
@@ -883,13 +876,14 @@ mod tests {
                 action_queue: &mut crate::context::ActionQueue::new(),
                 audio: &mut NullAudioBackend::new(),
                 audio_manager: &mut AudioManager::new(),
-                input: &mut NullInputBackend::new(),
+                ui: &mut NullUiBackend::new(),
                 background_color: &mut None,
                 library: &mut Library::empty(gc_context),
                 navigator: &mut NullNavigatorBackend::new(),
                 renderer: &mut NullRenderer::new(),
                 locale: &mut NullLocaleBackend::new(),
                 log: &mut NullLogBackend::new(),
+                video: &mut NullVideoBackend::new(),
                 mouse_hovered_object: None,
                 mouse_position: &(Twips::new(0), Twips::new(0)),
                 drag_object: &mut None,

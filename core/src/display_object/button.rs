@@ -1,4 +1,5 @@
 use crate::avm1::{Object, StageObject, Value};
+use crate::backend::ui::MouseCursor;
 use crate::context::{ActionType, RenderContext, UpdateContext};
 use crate::display_object::container::ChildContainer;
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
@@ -17,7 +18,8 @@ use swf::ButtonActionCondition;
 #[collect(no_drop)]
 pub struct Button<'gc>(GcCell<'gc, ButtonData<'gc>>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Collect)]
+#[collect(no_drop)]
 pub struct ButtonData<'gc> {
     base: DisplayObjectBase<'gc>,
     static_data: GcCell<'gc, ButtonStatic>,
@@ -29,6 +31,7 @@ pub struct ButtonData<'gc> {
     initialized: bool,
     has_focus: bool,
     enabled: bool,
+    use_hand_cursor: bool,
 }
 
 impl<'gc> Button<'gc> {
@@ -87,6 +90,7 @@ impl<'gc> Button<'gc> {
                 },
                 has_focus: false,
                 enabled: true,
+                use_hand_cursor: true,
             },
         ))
     }
@@ -208,6 +212,18 @@ impl<'gc> Button<'gc> {
             self.set_state(context, ButtonState::Up);
         }
     }
+
+    pub fn use_hand_cursor(self) -> bool {
+        self.0.read().use_hand_cursor
+    }
+
+    pub fn set_use_hand_cursor(
+        self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        use_hand_cursor: bool,
+    ) {
+        self.0.write(context.gc_context).use_hand_cursor = use_hand_cursor;
+    }
 }
 
 impl<'gc> TDisplayObject<'gc> for Button<'gc> {
@@ -302,12 +318,8 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
         }
     }
 
-    fn render(&self, context: &mut RenderContext<'_, 'gc>) {
-        context.transform_stack.push(&*self.transform());
-
+    fn render_self(&self, context: &mut RenderContext<'_, 'gc>) {
         self.render_children(context);
-
-        context.transform_stack.pop();
     }
 
     fn self_bounds(&self) -> BoundingBox {
@@ -351,6 +363,14 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
             }
         }
         None
+    }
+
+    fn mouse_cursor(&self) -> MouseCursor {
+        if self.use_hand_cursor() {
+            MouseCursor::Hand
+        } else {
+            MouseCursor::Arrow
+        }
     }
 
     fn object(&self) -> Value<'gc> {
@@ -548,20 +568,8 @@ impl<'gc> ButtonData<'gc> {
     }
 }
 
-unsafe impl<'gc> gc_arena::Collect for ButtonData<'gc> {
-    #[inline]
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.container.trace(cc);
-        for child in self.hit_area.values() {
-            child.trace(cc);
-        }
-        self.base.trace(cc);
-        self.static_data.trace(cc);
-        self.object.trace(cc);
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Collect)]
+#[collect(require_static)]
 #[allow(dead_code)]
 enum ButtonState {
     Up,
@@ -576,7 +584,8 @@ struct ButtonAction {
     key_code: Option<ButtonKeyCode>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Collect)]
+#[collect(require_static)]
 enum ButtonTracking {
     Push,
     Menu,
@@ -584,7 +593,8 @@ enum ButtonTracking {
 
 /// Static data shared between all instances of a button.
 #[allow(dead_code)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Collect)]
+#[collect(require_static)]
 struct ButtonStatic {
     swf: Arc<SwfMovie>,
     id: CharacterId,
@@ -596,11 +606,4 @@ struct ButtonStatic {
     over_to_down_sound: Option<swf::ButtonSound>,
     down_to_over_sound: Option<swf::ButtonSound>,
     over_to_up_sound: Option<swf::ButtonSound>,
-}
-
-unsafe impl gc_arena::Collect for ButtonStatic {
-    #[inline]
-    fn needs_trace() -> bool {
-        false
-    }
 }

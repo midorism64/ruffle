@@ -81,6 +81,16 @@ export enum LogLevel {
  */
 export interface BaseLoadOptions {
     /**
+     * If set to true, the movie is allowed to interact with the page through
+     * JavaScript, using a flash concept called `ExternalInterface`.
+     *
+     * This should only be enabled for movies you trust.
+     *
+     * @default false
+     */
+    allowScriptAccess?: boolean;
+
+    /**
      * Also known as "flashvars" - these are values that may be passed to
      * and loaded by the movie.
      *
@@ -157,6 +167,17 @@ export interface BaseLoadOptions {
      * @default true
      */
     contextMenu?: boolean;
+
+    /**
+     * Maximum amount of time a script can take before scripting
+     * is disabled.
+     *
+     * @default {"secs": 15, "nanos": 0}
+     */
+    maxExecutionDuration?: {
+        secs: number;
+        nanos: number;
+    };
 }
 
 /**

@@ -59,6 +59,13 @@ interface ContextMenuItem {
      * @param event The mouse event that triggered the click
      */
     onClick: (event: MouseEvent) => void;
+
+    /**
+     * Whether to add a separator right after the item
+     *
+     * @default true
+     */
+    separator?: boolean;
 }
 
 /**
@@ -108,6 +115,7 @@ export class RufflePlayer extends HTMLElement {
 
     private swfUrl?: string;
     private instance: Ruffle | null;
+    private options: BaseLoadOptions | null;
     private _trace_observer: ((message: string) => void) | null;
     private lastActivePlayingState: boolean;
 
@@ -116,12 +124,14 @@ export class RufflePlayer extends HTMLElement {
     private panicked = false;
 
     /**
-     * If set to true, the movie is allowed to interact with the page through
-     * JavaScript, using a flash concept called `ExternalInterface`.
+     * A movie can communicate with the hosting page using fscommand
+     * as long as script access is allowed.
      *
-     * This should only be enabled for movies you trust.
+     * @param command A string passed to the host application for any use.
+     * @param args A string passed to the host application for any use.
+     * @returns True if the command was handled.
      */
-    allowScriptAccess: boolean;
+    onFSCommand: ((command: string, args: string) => boolean) | null;
 
     /**
      * Any configuration that should apply to this specific player.
@@ -161,7 +171,8 @@ export class RufflePlayer extends HTMLElement {
         window.addEventListener("click", this.hideContextMenu.bind(this));
 
         this.instance = null;
-        this.allowScriptAccess = false;
+        this.options = null;
+        this.onFSCommand = null;
         this._trace_observer = null;
 
         this.ruffleConstructor = loadRuffle();
@@ -356,12 +367,7 @@ export class RufflePlayer extends HTMLElement {
             throw e;
         });
 
-        this.instance = new ruffleConstructor(
-            this.container,
-            this,
-            this.allowScriptAccess,
-            config
-        );
+        this.instance = new ruffleConstructor(this.container, this, config);
         console.log("New Ruffle instance created.");
 
         // In Firefox, AudioContext.state is always "suspended" when the object has just been created.
@@ -482,7 +488,10 @@ export class RufflePlayer extends HTMLElement {
                 ...this.config,
                 ...options,
             };
+            // `allowScriptAccess` can only be set in `options`.
+            config.allowScriptAccess = options.allowScriptAccess;
 
+            this.options = options;
             this.hasContextMenu = config.contextMenu !== false;
 
             // Pre-emptively set background color of container while Ruffle/SWF loads.
@@ -603,16 +612,11 @@ export class RufflePlayer extends HTMLElement {
             }
         }
         items.push({
-            text: "SEPARATOR",
-            onClick() {
-                // do nothing.
-            },
-        });
-        items.push({
             text: `About Ruffle (%VERSION_NAME%)`,
             onClick() {
                 window.open(RUFFLE_ORIGIN, "_blank");
             },
+            separator: false,
         });
         return items;
     }
@@ -632,19 +636,19 @@ export class RufflePlayer extends HTMLElement {
         }
 
         // Populate context menu items.
-        for (const { text, onClick } of this.contextMenuItems()) {
-            if (text == "SEPARATOR") {
-                const element = document.createElement("li");
-                element.className = "menu_separator";
+        for (const { text, onClick, separator } of this.contextMenuItems()) {
+            const menuItem = document.createElement("li");
+            menuItem.className = "menu_item active";
+            menuItem.textContent = text;
+            menuItem.addEventListener("click", onClick);
+            this.contextMenuElement.appendChild(menuItem);
+
+            if (separator !== false) {
+                const menuSeparator = document.createElement("li");
+                menuSeparator.className = "menu_separator";
                 const hr = document.createElement("hr");
-                element.appendChild(hr);
-                this.contextMenuElement.appendChild(element);
-            } else {
-                const element = document.createElement("li");
-                element.className = "menu_item active";
-                element.textContent = text;
-                element.addEventListener("click", onClick);
-                this.contextMenuElement.appendChild(element);
+                menuSeparator.appendChild(hr);
+                this.contextMenuElement.appendChild(menuSeparator);
             }
         }
 
@@ -1006,27 +1010,48 @@ export class RufflePlayer extends HTMLElement {
         }
     }
 
+    displayUnsupportedMessage(): void {
+        const div = document.createElement("div");
+        div.id = "message_overlay";
+        // TODO: Change link to https://ruffle.rs/faq or similar
+        // TODO: Pause content until message is dismissed
+        div.innerHTML = `<div class="message">
+            <p>Flash Player has been removed from browsers in 2021.</p>
+            <p>This content is not yet supported by the Ruffle emulator and will likely not run as intended.</p>
+            <div>
+                <a target="_top" class="more-info-link" href="https://github.com/ruffle-rs/ruffle/wiki/Frequently-Asked-Questions-For-Users">More info</a>
+                <button id="run-anyway-btn">Run anyway</button>
+            </div>
+        </div>`;
+        this.container.prepend(div);
+        const button = <HTMLButtonElement>div.querySelector("#run-anyway-btn");
+        button.onclick = () => {
+            div.parentNode!.removeChild(div);
+        };
+    }
+
     displayMessage(message: string): void {
         // Show a dismissible message in front of the player
         const div = document.createElement("div");
         div.id = "message_overlay";
         div.innerHTML = `<div class="message">
-            <div>
-                <p>${message}</p>
-            </div>
+            <p>${message}</p>
             <div>
                 <button id="continue-btn">continue</button>
-            </div>`;
+            </div>
+        </div>`;
         this.container.prepend(div);
         (<HTMLButtonElement>(
             this.container.querySelector("#continue-btn")
         )).onclick = () => {
-            div.remove();
+            div.parentNode!.removeChild(div);
         };
     }
 
     protected debugPlayerInfo(): string {
-        return `Allows script access: ${this.allowScriptAccess}\n`;
+        return `Allows script access: ${
+            this.options?.allowScriptAccess ?? false
+        }\n`;
     }
 }
 

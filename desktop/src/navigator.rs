@@ -111,8 +111,6 @@ impl NavigatorBackend for ExternalNavigatorBackend {
         };
     }
 
-    fn run_script(&self, _js_code: &str) {}
-
     fn fetch(&self, url: &str, options: RequestOptions) -> OwnedFuture<Vec<u8>, Error> {
         // TODO: honor sandbox type (local-with-filesystem, local-with-network, remote, ...)
         let full_url = match self.movie_url.clone().join(url) {
@@ -129,14 +127,15 @@ impl NavigatorBackend for ExternalNavigatorBackend {
 
         match processed_url.scheme() {
             "file" => Box::pin(async move {
-                fs::read(processed_url.to_file_path().unwrap()).map_err(Error::NetworkError)
+                fs::read(processed_url.to_file_path().unwrap_or_default())
+                    .map_err(Error::NetworkError)
             }),
             _ => Box::pin(async move {
                 let client = client.ok_or(Error::NetworkUnavailable)?;
 
                 let request = match options.method() {
-                    NavigationMethod::GET => Request::get(processed_url.to_string()),
-                    NavigationMethod::POST => Request::post(processed_url.to_string()),
+                    NavigationMethod::Get => Request::get(processed_url.to_string()),
+                    NavigationMethod::Post => Request::post(processed_url.to_string()),
                 };
 
                 let (body_data, _) = options.body().clone().unwrap_or_default();

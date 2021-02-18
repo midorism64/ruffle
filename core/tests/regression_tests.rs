@@ -3,13 +3,15 @@
 //! Trace output can be compared with correct output from the official Flash Player.
 
 use approx::assert_relative_eq;
-use ruffle_core::backend::locale::NullLocaleBackend;
-use ruffle_core::backend::log::LogBackend;
-use ruffle_core::backend::navigator::{NullExecutor, NullNavigatorBackend};
-use ruffle_core::backend::storage::MemoryStorageBackend;
-use ruffle_core::backend::ui::NullUiBackend;
 use ruffle_core::backend::{
-    audio::NullAudioBackend, input::NullInputBackend, render::NullRenderer,
+    audio::NullAudioBackend,
+    locale::NullLocaleBackend,
+    log::LogBackend,
+    navigator::{NullExecutor, NullNavigatorBackend},
+    render::NullRenderer,
+    storage::{MemoryStorageBackend, StorageBackend},
+    ui::NullUiBackend,
+    video::NullVideoBackend,
 };
 use ruffle_core::context::UpdateContext;
 use ruffle_core::external::Value as ExternalValue;
@@ -23,6 +25,13 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+fn set_logger() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .is_test(true)
+        .try_init();
+}
+
 type Error = Box<dyn std::error::Error>;
 
 // This macro generates test cases for a given list of SWFs.
@@ -32,6 +41,7 @@ macro_rules! swf_tests {
         #[test]
         $(#[$attr])*
         fn $name() -> Result<(), Error> {
+            set_logger();
             test_swf(
                 concat!("tests/swfs/", $path, "/test.swf"),
                 $num_frames,
@@ -51,6 +61,7 @@ macro_rules! swf_tests_approx {
         #[test]
         $(#[$attr])*
         fn $name() -> Result<(), Error> {
+            set_logger();
             test_swf_approx(
                 concat!("tests/swfs/", $path, "/test.swf"),
                 $num_frames,
@@ -260,6 +271,7 @@ swf_tests! {
     (edittext_leading, "avm1/edittext_leading", 1),
     #[ignore] (edittext_newlines, "avm1/edittext_newlines", 1),
     (edittext_html_entity, "avm1/edittext_html_entity", 1),
+    (edittext_password, "avm1/edittext_password", 1),
     #[ignore] (edittext_html_roundtrip, "avm1/edittext_html_roundtrip", 1),
     (edittext_newline_stripping, "avm1/edittext_newline_stripping", 1),
     (define_local, "avm1/define_local", 1),
@@ -316,6 +328,7 @@ swf_tests! {
     (bitmap_data, "avm1/bitmap_data", 1),
     (bitmap_data_noise, "avm1/bitmap_data_noise", 1),
     (array_call_method, "avm1/array_call_method", 1),
+    (bad_placeobject_clipaction, "avm1/bad_placeobject_clipaction", 2),
     (bad_swf_tag_past_eof, "avm1/bad_swf_tag_past_eof", 1),
     (sound, "avm1/sound", 1),
     (action_to_integer, "avm1/action_to_integer", 1),
@@ -429,6 +442,7 @@ swf_tests! {
     (as3_array_sort, "avm2/array_sort", 1),
     (as3_array_sorton, "avm2/array_sorton", 1),
     (as3_array_hasownproperty, "avm2/array_hasownproperty", 1),
+    (as3_array_length, "avm2/array_length", 1),
     (stage_property_representation, "avm1/stage_property_representation", 1),
     (as3_timeline_scripts, "avm2/timeline_scripts", 3),
     (as3_movieclip_properties, "avm2/movieclip_properties", 4),
@@ -501,6 +515,12 @@ swf_tests! {
     (as3_movieclip_dispatchevent_cancel, "avm2/movieclip_dispatchevent_cancel", 1),
     (as3_movieclip_dispatchevent_target, "avm2/movieclip_dispatchevent_target", 1),
     (as3_movieclip_dispatchevent_selfadd, "avm2/movieclip_dispatchevent_selfadd", 1),
+    (as3_string_constr, "avm2/string_constr", 1),
+    (as3_string_length, "avm2/string_length", 1),
+    (as3_string_char_at, "avm2/string_char_at", 1),
+    (as3_string_char_code_at, "avm2/string_char_code_at", 1),
+    (as3_typeof, "avm2/typeof", 1),
+    (use_hand_cursor, "avm1/use_hand_cursor", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -511,16 +531,17 @@ swf_tests_approx! {
     (stage_object_properties, "avm1/stage_object_properties", 6, epsilon = 0.051),
     (stage_object_properties_swf6, "avm1/stage_object_properties_swf6", 4, epsilon = 0.051),
     (movieclip_getbounds, "avm1/movieclip_getbounds", 1, epsilon = 0.051),
-    (parse_float, "avm1/parse_float", 1, max_relative = 5.0 * std::f64::EPSILON),
+    (parse_float, "avm1/parse_float", 1, max_relative = 5.0 * f64::EPSILON),
     (edittext_letter_spacing, "avm1/edittext_letter_spacing", 1, epsilon = 15.0), // TODO: Discrepancy in wrapping in letterSpacing = 0.1 test.
     (edittext_align, "avm1/edittext_align", 1, epsilon = 3.0),
+    (edittext_autosize, "avm1/edittext_autosize", 1, epsilon = 4.0), // TODO Flash has _width higher by 4.0, probably padding logic mistake
     (edittext_margins, "avm1/edittext_margins", 1, epsilon = 5.0), // TODO: Discrepancy in wrapping.
     (edittext_tab_stops, "avm1/edittext_tab_stops", 1, epsilon = 5.0),
     (edittext_bullet, "avm1/edittext_bullet", 1, epsilon = 3.0),
     (edittext_underline, "avm1/edittext_underline", 1, epsilon = 4.0),
-    (as3_coerce_string_precision, "avm2/coerce_string_precision", 1, max_relative = 30.0 * std::f64::EPSILON),
+    (as3_coerce_string_precision, "avm2/coerce_string_precision", 1, max_relative = 30.0 * f64::EPSILON),
     (as3_divide, "avm2/divide", 1, epsilon = 0.0), // TODO: Discrepancy in float formatting.
-    (as3_math, "avm2/math", 1, max_relative = 30.0 * std::f64::EPSILON),
+    (as3_math, "avm2/math", 1, max_relative = 30.0 * f64::EPSILON),
     (as3_displayobject_height, "avm2/displayobject_height", 7, epsilon = 0.06), // TODO: height/width appears to be off by 1 twip sometimes
     (as3_displayobject_width, "avm2/displayobject_width", 7, epsilon = 0.06),
     (as3_displayobject_rotation, "avm2/displayobject_rotation", 1, epsilon = 0.0000000001),
@@ -528,6 +549,7 @@ swf_tests_approx! {
 
 #[test]
 fn external_interface_avm1() -> Result<(), Error> {
+    set_logger();
     test_swf(
         "tests/swfs/avm1/external_interface/test.swf",
         1,
@@ -580,7 +602,47 @@ fn external_interface_avm1() -> Result<(), Error> {
 }
 
 #[test]
+fn shared_object_avm1() -> Result<(), Error> {
+    set_logger();
+    // Test SharedObject persistence. Run an SWF that saves data
+    // to a shared object twice and verify that the data is saved.
+    let mut memory_storage_backend: Box<dyn StorageBackend> =
+        Box::new(MemoryStorageBackend::default());
+
+    // Initial run; no shared object data.
+    test_swf(
+        "tests/swfs/avm1/shared_object/test.swf",
+        1,
+        "tests/swfs/avm1/shared_object/output1.txt",
+        |_player| Ok(()),
+        |player| {
+            // Save the storage backend for next run.
+            let mut player = player.lock().unwrap();
+            std::mem::swap(player.storage_mut(), &mut memory_storage_backend);
+            Ok(())
+        },
+    )?;
+
+    // Re-run the SWF, verifying that the shared object persists.
+    test_swf(
+        "tests/swfs/avm1/shared_object/test.swf",
+        1,
+        "tests/swfs/avm1/shared_object/output2.txt",
+        |player| {
+            // Swap in the previous storage backend.
+            let mut player = player.lock().unwrap();
+            std::mem::swap(player.storage_mut(), &mut memory_storage_backend);
+            Ok(())
+        },
+        |_player| Ok(()),
+    )?;
+
+    Ok(())
+}
+
+#[test]
 fn timeout_avm1() -> Result<(), Error> {
+    set_logger();
     test_swf(
         "tests/swfs/avm1/timeout/test.swf",
         1,
@@ -719,9 +781,9 @@ fn run_swf(
         Box::new(NullRenderer),
         Box::new(NullAudioBackend::new()),
         Box::new(NullNavigatorBackend::with_base_path(base_path, channel)),
-        Box::new(NullInputBackend::new()),
         Box::new(MemoryStorageBackend::default()),
         Box::new(NullLocaleBackend::new()),
+        Box::new(NullVideoBackend::new()),
         Box::new(TestLogBackend::new(trace_output.clone())),
         Box::new(NullUiBackend::new()),
     )?;
@@ -810,4 +872,8 @@ impl ExternalInterfaceProvider for ExternalInterfaceTestProvider {
     }
 
     fn on_callback_available(&self, _name: &str) {}
+
+    fn on_fs_command(&self, _command: &str, _args: &str) -> bool {
+        false
+    }
 }

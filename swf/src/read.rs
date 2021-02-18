@@ -360,7 +360,9 @@ impl<'a> Reader<'a> {
         let tag = match TagCode::from_u16(tag_code) {
             Some(TagCode::End) => Tag::End,
             Some(TagCode::ShowFrame) => Tag::ShowFrame,
-            Some(TagCode::CsmTextSettings) => tag_reader.read_csm_text_settings()?,
+            Some(TagCode::CsmTextSettings) => {
+                Tag::CsmTextSettings(tag_reader.read_csm_text_settings()?)
+            }
             Some(TagCode::DefineBinaryData) => {
                 let id = tag_reader.read_u16()?;
                 tag_reader.read_u32()?; // Reserved
@@ -947,13 +949,13 @@ impl<'a> Reader<'a> {
         ))
     }
 
-    fn read_csm_text_settings(&mut self) -> Result<Tag<'a>> {
+    pub fn read_csm_text_settings(&mut self) -> Result<CsmTextSettings> {
         let id = self.read_character_id()?;
         let flags = self.read_u8()?;
         let thickness = self.read_f32()?;
         let sharpness = self.read_f32()?;
         self.read_u8()?; // Reserved (0).
-        Ok(Tag::CsmTextSettings(CsmTextSettings {
+        Ok(CsmTextSettings {
             id,
             use_advanced_rendering: flags & 0b01000000 != 0,
             grid_fit: match flags & 0b11_000 {
@@ -964,7 +966,7 @@ impl<'a> Reader<'a> {
             },
             thickness,
             sharpness,
-        }))
+        })
     }
 
     pub fn read_frame_label(&mut self, length: usize) -> Result<FrameLabel<'a>> {
@@ -1815,8 +1817,8 @@ impl<'a> Reader<'a> {
             _ => return Err(Error::invalid_data("Invalid gradient spread mode")),
         };
         let interpolation = match flags & 0b11_0000 {
-            0b00_0000 => GradientInterpolation::RGB,
-            0b01_0000 => GradientInterpolation::LinearRGB,
+            0b00_0000 => GradientInterpolation::Rgb,
+            0b01_0000 => GradientInterpolation::LinearRgb,
             _ => return Err(Error::invalid_data("Invalid gradient interpolation mode")),
         };
         let num_records = usize::from(flags & 0b1111);
@@ -2173,7 +2175,14 @@ impl<'a> Reader<'a> {
         event_list.set(ClipEventFlag::LOAD, flags & 0b0000_0001 != 0);
 
         if self.version > 5 {
-            let flags = self.read_u8()?;
+            // There are SWFs in the wild with malformed final ClipActions that is only two bytes
+            // instead of four bytes (see #2899). Handle this gracefully to allow the tag to run.
+            // TODO: We may need a more general way to handle truncated tags, since this has
+            // occurred in a few different places.
+            // Allow for only two bytes in the clip action tag.
+            let flags = self.read_u8().unwrap_or_default();
+            let flags2 = self.read_u8().unwrap_or_default();
+            let _ = self.read_u8();
             event_list.set(ClipEventFlag::DRAG_OVER, flags & 0b1000_0000 != 0);
             event_list.set(ClipEventFlag::ROLL_OUT, flags & 0b0100_0000 != 0);
             event_list.set(ClipEventFlag::ROLL_OVER, flags & 0b0010_0000 != 0);
@@ -2183,14 +2192,11 @@ impl<'a> Reader<'a> {
             event_list.set(ClipEventFlag::INITIALIZE, flags & 0b0000_0010 != 0);
             event_list.set(ClipEventFlag::DATA, flags & 0b0000_0001 != 0);
 
-            let flags = self.read_u8()?;
             // Construct was only added in SWF7, but it's not version-gated;
             // Construct events will still fire in SWF6 in a v7+ player. (#1424)
-            event_list.set(ClipEventFlag::CONSTRUCT, flags & 0b0000_0100 != 0);
-            event_list.set(ClipEventFlag::KEY_PRESS, flags & 0b0000_0010 != 0);
-            event_list.set(ClipEventFlag::DRAG_OUT, flags & 0b0000_0001 != 0);
-
-            self.read_u8()?;
+            event_list.set(ClipEventFlag::CONSTRUCT, flags2 & 0b0000_0100 != 0);
+            event_list.set(ClipEventFlag::KEY_PRESS, flags2 & 0b0000_0010 != 0);
+            event_list.set(ClipEventFlag::DRAG_OUT, flags2 & 0b0000_0001 != 0);
         } else {
             // SWF19 pp. 48-50: For SWFv5, the ClipEventFlags only had 2 bytes of flags,
             // with the 2nd byte reserved (all 0).
@@ -2609,7 +2615,7 @@ impl<'a> Reader<'a> {
         })
     }
 
-    fn read_define_video_stream(&mut self) -> Result<Tag<'a>> {
+    pub fn read_define_video_stream(&mut self) -> Result<Tag<'a>> {
         let id = self.read_character_id()?;
         let num_frames = self.read_u16()?;
         let width = self.read_u16()?;
@@ -2619,8 +2625,9 @@ impl<'a> Reader<'a> {
         let codec = match self.read_u8()? {
             2 => VideoCodec::H263,
             3 => VideoCodec::ScreenVideo,
-            4 => VideoCodec::VP6,
-            5 => VideoCodec::VP6WithAlpha,
+            4 => VideoCodec::Vp6,
+            5 => VideoCodec::Vp6WithAlpha,
+            6 => VideoCodec::ScreenVideoV2,
             _ => return Err(Error::invalid_data("Invalid video codec.")),
         };
         Ok(Tag::DefineVideoStream(DefineVideoStream {
@@ -2642,7 +2649,7 @@ impl<'a> Reader<'a> {
         }))
     }
 
-    fn read_video_frame(&mut self) -> Result<Tag<'a>> {
+    pub fn read_video_frame(&mut self) -> Result<Tag<'a>> {
         let stream_id = self.read_character_id()?;
         let frame_num = self.read_u16()?;
         let data = self.read_slice_to_end();
@@ -3056,8 +3063,8 @@ pub mod tests {
             assert_eq!(reader.read_string().unwrap(), "");
         }
         {
-            let buf = "12🤖12\0".as_bytes();
-            let mut reader = Reader::new(&buf[..], 1);
+            let buf = "12🤖12\0";
+            let mut reader = Reader::new(buf.as_bytes(), 1);
             assert_eq!(reader.read_string().unwrap(), "12🤖12");
         }
     }

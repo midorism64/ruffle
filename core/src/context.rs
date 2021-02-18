@@ -3,14 +3,15 @@
 use crate::avm1::globals::system::SystemProperties;
 use crate::avm1::{Avm1, Object as Avm1Object, Timers, Value as Avm1Value};
 use crate::avm2::{Avm2, Object as Avm2Object, Value as Avm2Value};
-use crate::backend::input::InputBackend;
-use crate::backend::locale::LocaleBackend;
-use crate::backend::log::LogBackend;
-use crate::backend::storage::StorageBackend;
 use crate::backend::{
     audio::{AudioBackend, AudioManager, SoundHandle, SoundInstanceHandle},
+    locale::LocaleBackend,
+    log::LogBackend,
     navigator::NavigatorBackend,
     render::RenderBackend,
+    storage::StorageBackend,
+    ui::UiBackend,
+    video::VideoBackend,
 };
 use crate::display_object::{EditText, MovieClip, SoundTransform};
 use crate::external::ExternalInterface;
@@ -22,7 +23,7 @@ use crate::prelude::*;
 use crate::tag_utils::{SwfMovie, SwfSlice};
 use crate::transform::TransformStack;
 use core::fmt;
-use gc_arena::{Collect, CollectionContext, MutationContext};
+use gc_arena::{Collect, MutationContext};
 use instant::Instant;
 use rand::rngs::SmallRng;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -73,8 +74,8 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
     /// The renderer, used by the display objects to draw themselves.
     pub renderer: &'a mut dyn RenderBackend,
 
-    /// The input backend, used to detect user interactions.
-    pub input: &'a mut dyn InputBackend,
+    /// The UI backend, used to detect user interactions.
+    pub ui: &'a mut dyn UiBackend,
 
     /// The storage backend, used for storing persistent state
     pub storage: &'a mut dyn StorageBackend,
@@ -84,6 +85,9 @@ pub struct UpdateContext<'a, 'gc, 'gc_context> {
 
     /// The logging backend, used for trace output capturing
     pub log: &'a mut dyn LogBackend,
+
+    /// The video backend, used for video decoding
+    pub video: &'a mut dyn VideoBackend,
 
     /// The RNG, used by the AVM `RandomNumber` opcode,  `Math.random(),` and `random()`.
     pub rng: &'a mut SmallRng,
@@ -232,37 +236,6 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
     }
 }
 
-unsafe impl<'a, 'gc, 'gc_context> Collect for UpdateContext<'a, 'gc, 'gc_context> {
-    fn trace(&self, cc: CollectionContext) {
-        self.action_queue.trace(cc);
-        self.background_color.trace(cc);
-        self.library.trace(cc);
-        self.player_version.trace(cc);
-        self.needs_render.trace(cc);
-        self.swf.trace(cc);
-        self.audio.trace(cc);
-        self.audio_manager.trace(cc);
-        self.navigator.trace(cc);
-        self.renderer.trace(cc);
-        self.input.trace(cc);
-        self.storage.trace(cc);
-        self.rng.trace(cc);
-        self.levels.trace(cc);
-        self.mouse_hovered_object.trace(cc);
-        self.mouse_position.trace(cc);
-        self.drag_object.trace(cc);
-        self.load_manager.trace(cc);
-        self.system.trace(cc);
-        self.instance_counter.trace(cc);
-        self.shared_objects.trace(cc);
-        self.unbound_text_fields.trace(cc);
-        self.timers.trace(cc);
-        self.avm1.trace(cc);
-        self.avm2.trace(cc);
-        self.focus_tracker.trace(cc);
-    }
-}
-
 impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
     /// Transform a borrowed update context into an owned update context with
     /// a shorter internal lifetime.
@@ -289,7 +262,8 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
             renderer: self.renderer,
             locale: self.locale,
             log: self.log,
-            input: self.input,
+            ui: self.ui,
+            video: self.video,
             storage: self.storage,
             rng: self.rng,
             levels: self.levels,
@@ -317,6 +291,8 @@ impl<'a, 'gc, 'gc_context> UpdateContext<'a, 'gc, 'gc_context> {
 }
 
 /// A queued ActionScript call.
+#[derive(Collect)]
+#[collect(no_drop)]
 pub struct QueuedActions<'gc> {
     /// The movie clip this ActionScript is running on.
     pub clip: DisplayObject<'gc>,
@@ -326,14 +302,6 @@ pub struct QueuedActions<'gc> {
 
     /// Whether this is an unload action, which can still run if the clip is removed.
     pub is_unload: bool,
-}
-
-unsafe impl<'gc> Collect for QueuedActions<'gc> {
-    #[inline]
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.clip.trace(cc);
-        self.action_type.trace(cc);
-    }
 }
 
 /// Action and gotos need to be queued up to execute at the end of the frame.
@@ -426,7 +394,8 @@ pub struct RenderContext<'a, 'gc> {
 }
 
 /// The type of action being run.
-#[derive(Clone)]
+#[derive(Clone, Collect)]
+#[collect(no_drop)]
 pub enum ActionType<'gc> {
     /// Normal frame or event actions.
     Normal { bytecode: SwfSlice },
@@ -517,25 +486,6 @@ impl fmt::Debug for ActionType<'_> {
                 .field("reciever", reciever)
                 .field("args", args)
                 .finish(),
-        }
-    }
-}
-
-unsafe impl<'gc> Collect for ActionType<'gc> {
-    #[inline]
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        match self {
-            ActionType::Construct { constructor, .. } => {
-                constructor.trace(cc);
-            }
-            ActionType::Method { object, args, .. } => {
-                object.trace(cc);
-                args.trace(cc);
-            }
-            ActionType::NotifyListeners { args, .. } => {
-                args.trace(cc);
-            }
-            _ => {}
         }
     }
 }

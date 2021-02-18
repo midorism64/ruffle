@@ -6,9 +6,7 @@ use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
 use gc_arena::Collect;
 use gc_arena::MutationContext;
 use rand::Rng;
-use std::f64;
 use std::str;
-use std::u8;
 
 mod array;
 pub(crate) mod as_broadcaster;
@@ -57,6 +55,7 @@ pub(crate) mod system_security;
 pub(crate) mod text_field;
 mod text_format;
 mod transform;
+mod video;
 mod xml;
 
 pub fn random<'gc>(
@@ -508,6 +507,8 @@ pub struct SystemPrototypes<'gc> {
     pub date: Object<'gc>,
     pub bitmap_data: Object<'gc>,
     pub bitmap_data_constructor: Object<'gc>,
+    pub video: Object<'gc>,
+    pub video_constructor: Object<'gc>,
 }
 
 /// Initialize default global scope and builtins for an AVM1 instance.
@@ -583,6 +584,8 @@ pub fn create_globals<'gc>(
         movie_clip_loader_proto,
     );
     let date_proto: Object<'gc> = date::create_proto(gc_context, object_proto, function_proto);
+
+    let video_proto: Object<'gc> = video::create_proto(gc_context, object_proto, function_proto);
 
     //TODO: These need to be constructors and should also set `.prototype` on each one
     let object = object::create_object_object(gc_context, object_proto, function_proto);
@@ -698,6 +701,13 @@ pub fn create_globals<'gc>(
         constructor_to_fn!(transform::constructor),
         Some(function_proto),
         transform_proto,
+    );
+    let video = FunctionObject::constructor(
+        gc_context,
+        Executable::Native(video::constructor),
+        constructor_to_fn!(video::constructor),
+        Some(function_proto),
+        video_proto,
     );
 
     flash.define_value(gc_context, "geom", geom.into(), Attribute::empty());
@@ -1257,6 +1267,8 @@ pub fn create_globals<'gc>(
             date: date_proto,
             bitmap_data: bitmap_data_proto,
             bitmap_data_constructor: bitmap_data,
+            video: video_proto,
+            video_constructor: video,
         },
         globals.into(),
         broadcaster_functions,
@@ -1279,8 +1291,8 @@ mod tests {
             [10.0] => true,
             [-10.0] => true,
             [0.0] => false,
-            [std::f64::INFINITY] => true,
-            [std::f64::NAN] => false,
+            [f64::INFINITY] => true,
+            [f64::NAN] => false,
             [""] => false,
             ["Hello"] => true,
             [" "] => true,
@@ -1296,8 +1308,8 @@ mod tests {
             [10.0] => true,
             [-10.0] => true,
             [0.0] => false,
-            [std::f64::INFINITY] => true,
-            [std::f64::NAN] => false,
+            [f64::INFINITY] => true,
+            [f64::NAN] => false,
             [""] => false,
             ["Hello"] => false,
             [" "] => false,
@@ -1316,8 +1328,8 @@ mod tests {
             [10.0] => false,
             [-10.0] => false,
             [0.0] => false,
-            [std::f64::INFINITY] => false,
-            [std::f64::NAN] => true,
+            [f64::INFINITY] => false,
+            [f64::NAN] => true,
             [""] => true,
             ["Hello"] => true,
             [" "] => true,
@@ -1342,9 +1354,9 @@ mod tests {
             [10.0] => true,
             [-10.0] => true,
             [0.0] => true,
-            [std::f64::INFINITY] => false,
-            [std::f64::NEG_INFINITY] => false,
-            [std::f64::NAN] => false,
+            [f64::INFINITY] => false,
+            [f64::NEG_INFINITY] => false,
+            [f64::NAN] => false,
             [""] => false,
             ["Hello"] => false,
             [" "] => false,
@@ -1371,39 +1383,39 @@ mod tests {
             [false] => 0.0,
             [10.0] => 10.0,
             [-10.0] => -10.0,
-            ["true"] => std::f64::NAN,
-            ["false"] => std::f64::NAN,
+            ["true"] => f64::NAN,
+            ["false"] => f64::NAN,
             [1.0] => 1.0,
             [0.0] => 0.0,
             [0.000] => 0.0,
             ["0.000"] => 0.0,
-            ["True"] => std::f64::NAN,
-            ["False"] => std::f64::NAN,
-            [std::f64::NAN] => std::f64::NAN,
-            [std::f64::INFINITY] => std::f64::INFINITY,
-            [std::f64::NEG_INFINITY] => std::f64::NEG_INFINITY,
+            ["True"] => f64::NAN,
+            ["False"] => f64::NAN,
+            [f64::NAN] => f64::NAN,
+            [f64::INFINITY] => f64::INFINITY,
+            [f64::NEG_INFINITY] => f64::NEG_INFINITY,
             [" 12"] => 12.0,
             [" \t\r\n12"] => 12.0,
-            ["\u{A0}12"] => std::f64::NAN,
-            [" 0x12"] => std::f64::NAN,
+            ["\u{A0}12"] => f64::NAN,
+            [" 0x12"] => f64::NAN,
             ["01.2"] => 1.2,
-            [""] => std::f64::NAN,
-            ["Hello"] => std::f64::NAN,
-            [" "] => std::f64::NAN,
-            ["  5  "] => std::f64::NAN,
+            [""] => f64::NAN,
+            ["Hello"] => f64::NAN,
+            [" "] => f64::NAN,
+            ["  5  "] => f64::NAN,
             ["0"] => 0.0,
             ["1"] => 1.0,
-            ["Infinity"] => std::f64::NAN,
-            ["100a"] => std::f64::NAN,
-            ["0xhello"] => std::f64::NAN,
+            ["Infinity"] => f64::NAN,
+            ["100a"] => f64::NAN,
+            ["0xhello"] => f64::NAN,
             ["123e-1"] => 12.3,
-            ["0xUIXUIDFKHJDF012345678"] => std::f64::NAN,
+            ["0xUIXUIDFKHJDF012345678"] => f64::NAN,
             [] => 0.0
         },
         [5] => {
-            ["0x12"] => std::f64::NAN,
-            ["0x10"] => std::f64::NAN,
-            ["0x1999999981ffffff"] => std::f64::NAN,
+            ["0x12"] => f64::NAN,
+            ["0x10"] => f64::NAN,
+            ["0x1999999981ffffff"] => f64::NAN,
             ["010"] => 10,
             ["-010"] => -10,
             ["+010"] => 10,
@@ -1416,7 +1428,7 @@ mod tests {
         [6, 7] => {
             ["0x12"] => 18.0,
             ["0x10"] => 16.0,
-            ["-0x10"] => std::f64::NAN,
+            ["-0x10"] => f64::NAN,
             ["0x1999999981ffffff"] => -2113929217.0,
             ["010"] => 8,
             ["-010"] => -8,
@@ -1432,8 +1444,8 @@ mod tests {
             [Value::Null] => 0.0
         },
         [7] => {
-            [Value::Undefined] => std::f64::NAN,
-            [Value::Null] => std::f64::NAN
+            [Value::Undefined] => f64::NAN,
+            [Value::Null] => f64::NAN
         }
     );
 }

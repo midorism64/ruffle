@@ -8,6 +8,7 @@ use crate::avm2::{
     StageObject as Avm2StageObject, TObject as Avm2TObject, Value as Avm2Value,
 };
 use crate::backend::audio::{PreloadStreamHandle, SoundHandle, SoundInstanceHandle};
+use crate::backend::ui::MouseCursor;
 use bitflags::bitflags;
 
 use crate::avm1::activation::{Activation as Avm1Activation, ActivationIdentifier};
@@ -16,6 +17,7 @@ use crate::context::{ActionType, RenderContext, UpdateContext};
 use crate::display_object::container::{ChildContainer, TDisplayObjectContainer};
 use crate::display_object::{
     Bitmap, Button, DisplayObjectBase, EditText, Graphic, MorphShapeStatic, TDisplayObject, Text,
+    Video,
 };
 use crate::drawing::Drawing;
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult};
@@ -32,7 +34,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use swf::read::SwfReadExt;
-use swf::{FillStyle, FrameLabelData, LineStyle};
+use swf::{FillStyle, FrameLabelData, LineStyle, Tag};
 
 type FrameNumber = u16;
 
@@ -45,12 +47,14 @@ type FrameNumber = u16;
 #[collect(no_drop)]
 pub struct MovieClip<'gc>(GcCell<'gc, MovieClipData<'gc>>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Collect)]
+#[collect(no_drop)]
 pub struct MovieClipData<'gc> {
     base: DisplayObjectBase<'gc>,
     static_data: Gc<'gc, MovieClipStatic>,
     tag_stream_pos: u64,
     current_frame: FrameNumber,
+    #[collect(require_static)]
     audio_stream: Option<SoundInstanceHandle>,
     container: ChildContainer<'gc>,
     object: Option<AvmObject<'gc>>,
@@ -63,18 +67,7 @@ pub struct MovieClipData<'gc> {
     is_focusable: bool,
     has_focus: bool,
     enabled: bool,
-}
-
-unsafe impl<'gc> Collect for MovieClipData<'gc> {
-    #[inline]
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.container.trace(cc);
-        self.base.trace(cc);
-        self.static_data.trace(cc);
-        self.object.trace(cc);
-        self.avm2_constructor.trace(cc);
-        self.frame_scripts.trace(cc);
-    }
+    use_hand_cursor: bool,
 }
 
 impl<'gc> MovieClip<'gc> {
@@ -99,6 +92,7 @@ impl<'gc> MovieClip<'gc> {
                 is_focusable: false,
                 has_focus: false,
                 enabled: true,
+                use_hand_cursor: true,
             },
         ))
     }
@@ -131,6 +125,7 @@ impl<'gc> MovieClip<'gc> {
                 is_focusable: false,
                 has_focus: false,
                 enabled: true,
+                use_hand_cursor: true,
             },
         ))
     }
@@ -192,6 +187,10 @@ impl<'gc> MovieClip<'gc> {
 
                 Ok(())
             }
+            TagCode::CsmTextSettings => self
+                .0
+                .write(context.gc_context)
+                .csm_text_settings(context, reader),
             TagCode::DefineBits => self
                 .0
                 .write(context.gc_context)
@@ -284,6 +283,10 @@ impl<'gc> MovieClip<'gc> {
                 .0
                 .write(context.gc_context)
                 .define_sound(context, reader),
+            TagCode::DefineVideoStream => self
+                .0
+                .write(context.gc_context)
+                .define_video_stream(context, reader),
             TagCode::DefineSprite => self.0.write(context.gc_context).define_sprite(
                 context,
                 reader,
@@ -375,6 +378,10 @@ impl<'gc> MovieClip<'gc> {
                 &mut static_data,
                 1,
             ),
+            TagCode::VideoFrame => self
+                .0
+                .write(context.gc_context)
+                .preload_video_frame(context, reader),
             TagCode::SoundStreamHead2 => {
                 self.0.write(context.gc_context).preload_sound_stream_head(
                     context,
@@ -1091,7 +1098,7 @@ impl<'gc> MovieClip<'gc> {
                     }
                 }
                 // Run first frame.
-                child.apply_place_object(context.gc_context, self.movie(), place_object);
+                child.apply_place_object(context, self.movie(), place_object);
                 child.post_instantiation(context, child, None, Instantiator::Movie, false);
                 child.run_frame(context);
             }
@@ -1254,11 +1261,7 @@ impl<'gc> MovieClip<'gc> {
                 // If it's a rewind, we removed any dead children above, so we always
                 // modify the previous child.
                 Some(prev_child) if params.id() == 0 || is_rewind => {
-                    prev_child.apply_place_object(
-                        context.gc_context,
-                        self.movie(),
-                        &params.place_object,
-                    );
+                    prev_child.apply_place_object(context, self.movie(), &params.place_object);
                 }
                 _ => {
                     if let Some(child) = clip.instantiate_child(
@@ -1566,6 +1569,18 @@ impl<'gc> MovieClip<'gc> {
     pub fn set_enabled(self, context: &mut UpdateContext<'_, 'gc, '_>, enabled: bool) {
         self.0.write(context.gc_context).enabled = enabled;
     }
+
+    pub fn use_hand_cursor(self) -> bool {
+        self.0.read().use_hand_cursor
+    }
+
+    pub fn set_use_hand_cursor(
+        self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        use_hand_cursor: bool,
+    ) {
+        self.0.write(context.gc_context).use_hand_cursor = use_hand_cursor;
+    }
 }
 
 impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
@@ -1614,11 +1629,9 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         }
     }
 
-    fn render(&self, context: &mut RenderContext<'_, 'gc>) {
-        context.transform_stack.push(&*self.transform());
+    fn render_self(&self, context: &mut RenderContext<'_, 'gc>) {
         self.0.read().drawing.render(context);
         self.render_children(context);
-        context.transform_stack.pop();
     }
 
     fn self_bounds(&self) -> BoundingBox {
@@ -1695,6 +1708,14 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         None
     }
 
+    fn mouse_cursor(&self) -> MouseCursor {
+        if self.use_hand_cursor() {
+            MouseCursor::Hand
+        } else {
+            MouseCursor::Arrow
+        }
+    }
+
     fn handle_clip_event(
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
@@ -1704,7 +1725,10 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
             return ClipEventResult::NotHandled;
         }
 
-        if !self.enabled() && !matches!(event, ClipEvent::KeyPress { .. }) {
+        if !self.enabled()
+            && event.is_button_event()
+            && !matches!(event, ClipEvent::KeyPress { .. })
+        {
             return ClipEventResult::NotHandled;
         }
 
@@ -2199,6 +2223,62 @@ impl<'gc, 'a> MovieClipData<'gc> {
         Ok(())
     }
 
+    fn csm_text_settings(
+        &mut self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        reader: &mut SwfStream<'a>,
+    ) -> DecodeResult {
+        let settings = reader.read_csm_text_settings()?;
+        let library = context.library.library_for_movie_mut(self.movie());
+        match library.character_by_id(settings.id) {
+            Some(Character::Text(text)) => {
+                text.set_render_settings(context.gc_context, settings.into());
+            }
+            Some(Character::EditText(edit_text)) => {
+                edit_text.set_render_settings(context.gc_context, settings.into());
+            }
+            Some(_) => {
+                log::warn!(
+                    "Tried to apply CSMTextSettings to non-text character ID {}",
+                    settings.id
+                );
+            }
+            None => {
+                log::warn!(
+                    "Tried to apply CSMTextSettings to unregistered character ID {}",
+                    settings.id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn preload_video_frame(
+        &mut self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        reader: &mut SwfStream,
+    ) -> DecodeResult {
+        match reader.read_video_frame()? {
+            Tag::VideoFrame(vframe) => {
+                let library = context.library.library_for_movie_mut(self.movie());
+                match library.character_by_id(vframe.stream_id) {
+                    Some(Character::Video(mut v)) => {
+                        v.preload_swf_frame(vframe, context);
+
+                        Ok(())
+                    }
+                    _ => Err(format!(
+                        "Attempted to preload video frames into non-video character {}",
+                        vframe.stream_id
+                    )
+                    .into()),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
     #[inline]
     fn define_bits(
         &mut self,
@@ -2574,6 +2654,27 @@ impl<'gc, 'a> MovieClipData<'gc> {
         Ok(())
     }
 
+    #[inline]
+    fn define_video_stream(
+        &mut self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        reader: &mut SwfStream,
+    ) -> DecodeResult {
+        match reader.read_define_video_stream()? {
+            Tag::DefineVideoStream(streamdef) => {
+                let id = streamdef.id;
+                let video = Video::from_swf_tag(self.movie(), streamdef, context.gc_context);
+                context
+                    .library
+                    .library_for_movie_mut(self.movie())
+                    .register_character(id, Character::Video(video));
+            }
+            _ => unreachable!(),
+        };
+
+        Ok(())
+    }
+
     fn define_sprite(
         &mut self,
         context: &mut UpdateContext<'_, 'gc, '_>,
@@ -2798,7 +2899,7 @@ impl<'gc, 'a> MovieClip<'gc> {
             }
             PlaceObjectAction::Modify => {
                 if let Some(child) = self.child_by_depth(place_object.depth.into()) {
-                    child.apply_place_object(context.gc_context, self.movie(), &place_object);
+                    child.apply_place_object(context, self.movie(), &place_object);
                     child
                 } else {
                     return Ok(());
@@ -3093,6 +3194,8 @@ impl<'a> GotoPlaceObject<'a> {
 
 bitflags! {
     /// Boolean state flags used by `MovieClip`.
+    #[derive(Collect)]
+    #[collect(require_static)]
     struct MovieClipFlags: u8 {
         /// Whether this `MovieClip` has run its initial frame.
         const INITIALIZED             = 1 << 0;
@@ -3110,7 +3213,8 @@ bitflags! {
 
 /// Actions that are attached to a `MovieClip` event in
 /// an `onClipEvent`/`on` handler.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Collect)]
+#[collect(require_static)]
 pub struct ClipAction {
     /// The event that triggers this handler.
     event: ClipEvent,

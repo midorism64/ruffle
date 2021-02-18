@@ -25,9 +25,10 @@ mod graphic;
 mod morph_shape;
 mod movie_clip;
 mod text;
+mod video;
 
 use crate::avm1::activation::Activation;
-use crate::backend::input::MouseCursor;
+use crate::backend::ui::MouseCursor;
 pub use crate::display_object::container::{
     DisplayObjectContainer, Lists, TDisplayObjectContainer,
 };
@@ -39,8 +40,10 @@ pub use graphic::Graphic;
 pub use morph_shape::{MorphShape, MorphShapeStatic};
 pub use movie_clip::{MovieClip, Scene};
 pub use text::Text;
+pub use video::Video;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Collect)]
+#[collect(no_drop)]
 pub struct DisplayObjectBase<'gc> {
     parent: Option<DisplayObject<'gc>>,
     place_frame: u16,
@@ -70,6 +73,12 @@ pub struct DisplayObjectBase<'gc> {
     /// The sound transform of sounds playing via this display object.
     sound_transform: SoundTransform,
 
+    /// The display object that we are being masked by.
+    masker: Option<DisplayObject<'gc>>,
+
+    /// The display object we are currently masking.
+    maskee: Option<DisplayObject<'gc>>,
+
     /// Bit flags for various display object properites.
     flags: DisplayObjectFlags,
 }
@@ -89,18 +98,11 @@ impl<'gc> Default for DisplayObjectBase<'gc> {
             skew: 0.0,
             prev_sibling: None,
             next_sibling: None,
+            masker: None,
+            maskee: None,
             sound_transform: Default::default(),
             flags: DisplayObjectFlags::VISIBLE,
         }
-    }
-}
-
-unsafe impl<'gc> Collect for DisplayObjectBase<'gc> {
-    #[inline]
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.parent.trace(cc);
-        self.prev_sibling.trace(cc);
-        self.next_sibling.trace(cc);
     }
 }
 
@@ -442,6 +444,20 @@ impl<'gc> DisplayObjectBase<'gc> {
     fn movie(&self) -> Option<Arc<SwfMovie>> {
         self.parent.and_then(|p| p.movie())
     }
+
+    fn masker(&self) -> Option<DisplayObject<'gc>> {
+        self.masker
+    }
+    fn set_masker(&mut self, _context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>) {
+        self.masker = node;
+    }
+
+    fn maskee(&self) -> Option<DisplayObject<'gc>> {
+        self.maskee
+    }
+    fn set_maskee(&mut self, _context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>) {
+        self.maskee = node;
+    }
 }
 
 #[enum_trait_object(
@@ -455,6 +471,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         MorphShape(MorphShape<'gc>),
         MovieClip(MovieClip<'gc>),
         Text(Text<'gc>),
+        Video(Video<'gc>),
     }
 )]
 pub trait TDisplayObject<'gc>:
@@ -737,6 +754,20 @@ pub trait TDisplayObject<'gc>:
     fn set_prev_sibling(&self, context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>);
     fn next_sibling(&self) -> Option<DisplayObject<'gc>>;
     fn set_next_sibling(&self, context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>);
+    fn masker(&self) -> Option<DisplayObject<'gc>>;
+    fn set_masker(
+        &self,
+        context: MutationContext<'gc, '_>,
+        node: Option<DisplayObject<'gc>>,
+        remove_old_link: bool,
+    );
+    fn maskee(&self) -> Option<DisplayObject<'gc>>;
+    fn set_maskee(
+        &self,
+        context: MutationContext<'gc, '_>,
+        node: Option<DisplayObject<'gc>>,
+        remove_old_link: bool,
+    );
 
     /// Get another level by level name.
     ///
@@ -844,7 +875,40 @@ pub trait TDisplayObject<'gc>:
     }
 
     fn run_frame(&self, _context: &mut UpdateContext<'_, 'gc, '_>) {}
-    fn render(&self, _context: &mut RenderContext<'_, 'gc>) {}
+    fn render_self(&self, _context: &mut RenderContext<'_, 'gc>) {}
+
+    fn render(&self, context: &mut RenderContext<'_, 'gc>) {
+        if self.maskee().is_some() {
+            return;
+        }
+        context.transform_stack.push(&*self.transform());
+
+        let mask = self.masker();
+        let mut mask_transform = crate::transform::Transform::default();
+        if let Some(m) = mask {
+            mask_transform.matrix = self.global_to_local_matrix();
+            mask_transform.matrix *= m.local_to_global_matrix();
+            context.renderer.push_mask();
+            context.allow_mask = false;
+            context.transform_stack.push(&mask_transform);
+            m.render_self(context);
+            context.transform_stack.pop();
+            context.allow_mask = true;
+            context.renderer.activate_mask();
+        }
+        self.render_self(context);
+        if let Some(m) = mask {
+            context.renderer.deactivate_mask();
+            context.allow_mask = false;
+            context.transform_stack.push(&mask_transform);
+            m.render_self(context);
+            context.transform_stack.pop();
+            context.allow_mask = true;
+            context.renderer.pop_mask();
+        }
+
+        context.transform_stack.pop();
+    }
 
     fn unload(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
         // Unload children.
@@ -879,32 +943,37 @@ pub trait TDisplayObject<'gc>:
     fn as_container(self) -> Option<DisplayObjectContainer<'gc>> {
         None
     }
+    fn as_video(self) -> Option<Video<'gc>> {
+        None
+    }
 
     fn apply_place_object(
         &self,
-        gc_context: MutationContext<'gc, '_>,
+        context: &mut UpdateContext<'_, 'gc, '_>,
         placing_movie: Option<Arc<SwfMovie>>,
         place_object: &swf::PlaceObject,
     ) {
         // PlaceObject tags only apply if this onject has not been dynamically moved by AS code.
         if !self.transformed_by_script() {
             if let Some(matrix) = &place_object.matrix {
-                self.set_matrix(gc_context, &matrix);
+                self.set_matrix(context.gc_context, &matrix);
             }
             if let Some(color_transform) = &place_object.color_transform {
-                self.set_color_transform(gc_context, &color_transform.clone().into());
+                self.set_color_transform(context.gc_context, &color_transform.clone().into());
             }
             if let Some(name) = &place_object.name {
                 let encoding = swf::SwfStr::encoding_for_version(self.swf_version());
                 let name = name.to_str_lossy(encoding);
-                self.set_name(gc_context, &name);
+                self.set_name(context.gc_context, &name);
             }
             if let Some(clip_depth) = place_object.clip_depth {
-                self.set_clip_depth(gc_context, clip_depth.into());
+                self.set_clip_depth(context.gc_context, clip_depth.into());
             }
             if let Some(ratio) = place_object.ratio {
                 if let Some(mut morph_shape) = self.as_morph_shape() {
-                    morph_shape.set_ratio(gc_context, ratio);
+                    morph_shape.set_ratio(context.gc_context, ratio);
+                } else if let Some(video) = self.as_video() {
+                    video.seek(context, ratio.into());
                 }
             }
             // Clip events only apply to movie clips.
@@ -915,7 +984,7 @@ pub trait TDisplayObject<'gc>:
                 use crate::display_object::movie_clip::ClipAction;
                 if let Some(placing_movie) = placing_movie {
                     clip.set_clip_actions(
-                        gc_context,
+                        context.gc_context,
                         clip_actions
                             .iter()
                             .cloned()
@@ -1233,6 +1302,38 @@ macro_rules! impl_display_object_sansbounds {
         ) {
             self.0.write(context).$field.set_next_sibling(context, node);
         }
+        fn masker(&self) -> Option<DisplayObject<'gc>> {
+            self.0.read().$field.masker()
+        }
+        fn set_masker(
+            &self,
+            context: gc_arena::MutationContext<'gc, '_>,
+            node: Option<DisplayObject<'gc>>,
+            remove_old_link: bool,
+        ) {
+            if remove_old_link {
+                if let Some(old_masker) = self.0.read().$field.masker() {
+                    old_masker.set_maskee(context, None, false);
+                }
+            }
+            self.0.write(context).$field.set_masker(context, node);
+        }
+        fn maskee(&self) -> Option<DisplayObject<'gc>> {
+            self.0.read().$field.maskee()
+        }
+        fn set_maskee(
+            &self,
+            context: gc_arena::MutationContext<'gc, '_>,
+            node: Option<DisplayObject<'gc>>,
+            remove_old_link: bool,
+        ) {
+            if remove_old_link {
+                if let Some(old_maskee) = self.0.read().$field.maskee() {
+                    old_maskee.set_masker(context, None, false);
+                }
+            }
+            self.0.write(context).$field.set_maskee(context, node);
+        }
         fn removed(&self) -> bool {
             self.0.read().$field.removed()
         }
@@ -1380,7 +1481,8 @@ bitflags! {
 /// Every value is a percentage (0-100), but out of range values are allowed.
 /// In AVM1, this is returned by `Sound.getTransform`.
 /// In AVM2, this is returned by `Sprite.soundTransform`.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Collect)]
+#[collect(require_static)]
 pub struct SoundTransform {
     pub volume: i32,
     pub left_to_left: i32,

@@ -1,12 +1,13 @@
 //! `EditText` display object and support code.
+
 use crate::avm1::activation::{Activation, ActivationIdentifier};
 use crate::avm1::{Avm1, AvmString, Object, StageObject, TObject, Value};
-use crate::backend::input::MouseCursor;
+use crate::backend::ui::MouseCursor;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::drawing::Drawing;
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode};
-use crate::font::{round_down_to_pixel, Glyph};
+use crate::font::{round_down_to_pixel, Glyph, TextRenderSettings};
 use crate::html::{BoxBounds, FormatSpans, LayoutBox, LayoutContent, TextFormat};
 use crate::prelude::*;
 use crate::shape_utils::DrawCommand;
@@ -15,7 +16,7 @@ use crate::tag_utils::SwfMovie;
 use crate::transform::Transform;
 use crate::types::{Degrees, Percent};
 use crate::vminterface::Instantiator;
-use crate::xml::XMLDocument;
+use crate::xml::XmlDocument;
 use chrono::Utc;
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use std::{cell::Ref, sync::Arc};
@@ -62,7 +63,7 @@ pub struct EditTextData<'gc> {
     /// appropriate set of format spans, which is used for actual rendering.
     /// The HTML is only retained if there is also a stylesheet already defined
     /// on the `EditText`, else it is discarded during the lowering process.
-    document: XMLDocument<'gc>,
+    document: XmlDocument<'gc>,
 
     /// The underlying text format spans of the `EditText`.
     ///
@@ -86,7 +87,13 @@ pub struct EditTextData<'gc> {
     /// If the text is word-wrapped.
     is_word_wrap: bool,
 
-    /// The color of the background fill. Only applied when has_border.
+    /// If this is a password input field
+    is_password: bool,
+
+    /// If the text field should have a background. Only applied when has_border.
+    has_background: bool,
+
+    /// The color of the background fill. Only applied when has_border and has_background.
     background_color: u32,
 
     /// If the text field should have a border.
@@ -135,6 +142,9 @@ pub struct EditTextData<'gc> {
 
     /// Whether or not this EditText has the current keyboard focus
     has_focus: bool,
+
+    /// Which rendering engine this text field will use.
+    render_settings: TextRenderSettings,
 }
 
 impl<'gc> EditText<'gc> {
@@ -147,9 +157,10 @@ impl<'gc> EditText<'gc> {
         let is_multiline = swf_tag.is_multiline;
         let is_word_wrap = swf_tag.is_word_wrap;
         let is_selectable = swf_tag.is_selectable;
+        let is_password = swf_tag.is_password;
         let is_editable = !swf_tag.is_read_only;
         let is_html = swf_tag.is_html;
-        let document = XMLDocument::new(context.gc_context);
+        let document = XmlDocument::new(context.gc_context);
         let text = swf_tag.initial_text.clone().unwrap_or_default();
         let default_format = TextFormat::from_swf_tag(swf_tag.clone(), swf_movie.clone(), context);
         let encoding = swf_movie.encoding();
@@ -172,6 +183,10 @@ impl<'gc> EditText<'gc> {
             text_spans.replace_text(0, text_spans.text().len(), &filtered, Some(&default_format));
         }
 
+        if is_password {
+            text_spans.hide_text();
+        }
+
         let bounds: BoundingBox = swf_tag.bounds.clone().into();
 
         let (layout, intrinsic_bounds) = LayoutBox::lower_from_text_spans(
@@ -183,6 +198,7 @@ impl<'gc> EditText<'gc> {
             swf_tag.is_device_font,
         );
 
+        let has_background = swf_tag.has_border;
         let background_color = 0xFFFFFF; // Default is white
         let has_border = swf_tag.has_border;
         let border_color = 0; // Default is black
@@ -239,6 +255,8 @@ impl<'gc> EditText<'gc> {
                 is_selectable,
                 is_editable,
                 is_word_wrap,
+                is_password,
+                has_background,
                 background_color,
                 has_border,
                 border_color,
@@ -255,6 +273,7 @@ impl<'gc> EditText<'gc> {
                 firing_variable_binding: false,
                 selection: None,
                 has_focus: false,
+                render_settings: Default::default(),
             },
         ));
 
@@ -370,7 +389,7 @@ impl<'gc> EditText<'gc> {
     ) -> Result<(), Error> {
         if self.is_html() {
             let html_string = text.replace("<sbr>", "\n").replace("<br>", "\n");
-            let document = XMLDocument::new(context.gc_context);
+            let document = XmlDocument::new(context.gc_context);
 
             if let Err(err) =
                 document
@@ -387,7 +406,7 @@ impl<'gc> EditText<'gc> {
         Ok(())
     }
 
-    pub fn html_tree(self, context: &mut UpdateContext<'_, 'gc, '_>) -> XMLDocument<'gc> {
+    pub fn html_tree(self, context: &mut UpdateContext<'_, 'gc, '_>) -> XmlDocument<'gc> {
         self.0.read().text_spans.raise_to_html(context.gc_context)
     }
 
@@ -401,7 +420,7 @@ impl<'gc> EditText<'gc> {
     /// In stylesheet mode, the opposite is true: text spans are an
     /// intermediate, user-facing text span APIs don't work, and the document
     /// is retained.
-    pub fn set_html_tree(self, doc: XMLDocument<'gc>, context: &mut UpdateContext<'_, 'gc, '_>) {
+    pub fn set_html_tree(self, doc: XmlDocument<'gc>, context: &mut UpdateContext<'_, 'gc, '_>) {
         let mut write = self.0.write(context.gc_context);
 
         write.document = doc;
@@ -459,6 +478,15 @@ impl<'gc> EditText<'gc> {
         self.0.read().is_multiline
     }
 
+    pub fn is_password(self) -> bool {
+        self.0.read().is_password
+    }
+
+    pub fn set_password(self, is_password: bool, context: &mut UpdateContext<'_, 'gc, '_>) {
+        self.0.write(context.gc_context).is_password = is_password;
+        self.relayout(context);
+    }
+
     pub fn set_multiline(self, is_multiline: bool, context: &mut UpdateContext<'_, 'gc, '_>) {
         self.0.write(context.gc_context).is_multiline = is_multiline;
         self.relayout(context);
@@ -488,6 +516,15 @@ impl<'gc> EditText<'gc> {
     pub fn set_autosize(self, asm: AutoSizeMode, context: &mut UpdateContext<'_, 'gc, '_>) {
         self.0.write(context.gc_context).autosize = asm;
         self.relayout(context);
+    }
+
+    pub fn has_background(self) -> bool {
+        self.0.read().has_background
+    }
+
+    pub fn set_has_background(self, context: MutationContext<'gc, '_>, has_background: bool) {
+        self.0.write(context).has_background = has_background;
+        self.redraw_border(context);
     }
 
     pub fn background_color(self) -> u32 {
@@ -641,21 +678,29 @@ impl<'gc> EditText<'gc> {
 
         write.drawing.clear();
 
-        if write.has_border {
+        if write.has_border || write.has_background {
             let bounds = write.bounds.clone();
             let border_color = write.border_color;
             let background_color = write.background_color;
 
-            write.drawing.set_line_style(Some(swf::LineStyle::new_v1(
-                Twips::new(1),
-                swf::Color::from_rgb(border_color, 0xFF),
-            )));
-            write
-                .drawing
-                .set_fill_style(Some(swf::FillStyle::Color(swf::Color::from_rgb(
-                    background_color,
-                    0xFF,
-                ))));
+            if write.has_border {
+                write.drawing.set_line_style(Some(swf::LineStyle::new_v1(
+                    Twips::new(1),
+                    swf::Color::from_rgb(border_color, 0xFF),
+                )));
+            } else {
+                write.drawing.set_line_style(None);
+            }
+            if write.has_background {
+                write
+                    .drawing
+                    .set_fill_style(Some(swf::FillStyle::Color(swf::Color::from_rgb(
+                        background_color,
+                        0xFF,
+                    ))));
+            } else {
+                write.drawing.set_fill_style(None);
+            }
             write.drawing.draw_command(DrawCommand::MoveTo {
                 x: Twips::new(0),
                 y: Twips::new(0),
@@ -696,6 +741,14 @@ impl<'gc> EditText<'gc> {
         let movie = edit_text.static_data.swf.clone();
         let width = edit_text.bounds.width() - Twips::from_pixels(Self::INTERNAL_PADDING * 2.0);
 
+        if edit_text.is_password {
+            // If the text is a password, hide the text
+            edit_text.text_spans.hide_text();
+        } else if edit_text.text_spans.has_displayed_text() {
+            // If it is not a password and has displayed text, we can clear the displayed text
+            edit_text.text_spans.clear_displayed_text();
+        }
+
         let (new_layout, intrinsic_bounds) = LayoutBox::lower_from_text_spans(
             &edit_text.text_spans,
             context,
@@ -712,38 +765,39 @@ impl<'gc> EditText<'gc> {
             AutoSizeMode::None => {}
             AutoSizeMode::Left => {
                 if !is_word_wrap {
-                    let old_x = edit_text.bounds.x_min;
-                    edit_text.bounds.set_x(old_x);
-                    edit_text.base.set_x(old_x.to_pixels());
                     edit_text.bounds.set_width(intrinsic_bounds.width());
                 }
 
                 edit_text.bounds.set_height(intrinsic_bounds.height());
                 edit_text.base.set_transformed_by_script(true);
+                drop(edit_text);
+                self.redraw_border(context.gc_context);
             }
             AutoSizeMode::Center => {
                 if !is_word_wrap {
-                    let old_x = edit_text.bounds.x_min;
-                    let new_x = (intrinsic_bounds.width() - old_x) / 2;
-                    edit_text.bounds.set_x(new_x);
-                    edit_text.base.set_x(new_x.to_pixels());
+                    let center = (edit_text.bounds.x_min + edit_text.bounds.x_max) / 2;
+                    edit_text
+                        .bounds
+                        .set_x(center - intrinsic_bounds.width() / 2);
                     edit_text.bounds.set_width(intrinsic_bounds.width());
                 }
 
                 edit_text.bounds.set_height(intrinsic_bounds.height());
                 edit_text.base.set_transformed_by_script(true);
+                drop(edit_text);
+                self.redraw_border(context.gc_context);
             }
             AutoSizeMode::Right => {
                 if !is_word_wrap {
-                    let old_x = edit_text.bounds.x_min;
-                    let new_x = intrinsic_bounds.width() - old_x;
+                    let new_x = edit_text.bounds.x_max - intrinsic_bounds.width();
                     edit_text.bounds.set_x(new_x);
-                    edit_text.base.set_x(new_x.to_pixels());
                     edit_text.bounds.set_width(intrinsic_bounds.width());
                 }
 
                 edit_text.bounds.set_height(intrinsic_bounds.height());
                 edit_text.base.set_transformed_by_script(true);
+                drop(edit_text);
+                self.redraw_border(context.gc_context);
             }
         }
     }
@@ -798,7 +852,7 @@ impl<'gc> EditText<'gc> {
         // Instead, we embed an SWF version of Noto Sans to use as the "device font", and render
         // it the same as any other SWF outline text.
         if let Some((text, _tf, font, params, color)) =
-            lbox.as_renderable_text(edit_text.text_spans.text())
+            lbox.as_renderable_text(edit_text.text_spans.displayed_text())
         {
             let baseline_adjustment =
                 font.get_baseline_for_height(params.height()) - params.height();
@@ -1032,6 +1086,14 @@ impl<'gc> EditText<'gc> {
         } else {
             text.selection = None;
         }
+    }
+
+    pub fn set_render_settings(
+        self,
+        gc_context: MutationContext<'gc, '_>,
+        settings: TextRenderSettings,
+    ) {
+        self.0.write(gc_context).render_settings = settings
     }
 
     pub fn screen_position_to_index(self, position: (Twips, Twips)) -> Option<usize> {
@@ -1342,14 +1404,11 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         self.redraw_border(context);
     }
 
-    fn render(&self, context: &mut RenderContext<'_, 'gc>) {
+    fn render_self(&self, context: &mut RenderContext<'_, 'gc>) {
         if !self.world_bounds().intersects(&context.view_bounds) {
             // Off-screen; culled
             return;
         }
-
-        let transform = self.transform().clone();
-        context.transform_stack.push(&transform);
 
         let edit_text = self.0.read();
         context.transform_stack.push(&Transform {
@@ -1427,7 +1486,6 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         );
         context.renderer.pop_mask();
 
-        context.transform_stack.pop();
         context.transform_stack.pop();
     }
 
@@ -1521,27 +1579,27 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
                     let length = text.len();
                     match key_code {
                         ButtonKeyCode::Left => {
-                            if (context.input.is_key_down(KeyCode::Shift) || selection.is_caret())
+                            if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
                                 && selection.to > 0
                             {
                                 selection.to = string_utils::prev_char_boundary(text, selection.to);
-                                if !context.input.is_key_down(KeyCode::Shift) {
+                                if !context.ui.is_key_down(KeyCode::Shift) {
                                     selection.from = selection.to;
                                 }
-                            } else if !context.input.is_key_down(KeyCode::Shift) {
+                            } else if !context.ui.is_key_down(KeyCode::Shift) {
                                 selection.to = selection.start();
                                 selection.from = selection.to;
                             }
                         }
                         ButtonKeyCode::Right => {
-                            if (context.input.is_key_down(KeyCode::Shift) || selection.is_caret())
+                            if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
                                 && selection.to < length
                             {
                                 selection.to = string_utils::next_char_boundary(text, selection.to);
-                                if !context.input.is_key_down(KeyCode::Shift) {
+                                if !context.ui.is_key_down(KeyCode::Shift) {
                                     selection.from = selection.to;
                                 }
-                            } else if !context.input.is_key_down(KeyCode::Shift) {
+                            } else if !context.ui.is_key_down(KeyCode::Shift) {
                                 selection.to = selection.end();
                                 selection.from = selection.to;
                             }
@@ -1567,7 +1625,8 @@ struct EditTextStatic {
     swf: Arc<SwfMovie>,
     text: EditTextStaticData,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Collect)]
+#[collect(require_static)]
 struct EditTextStaticData {
     id: CharacterId,
     bounds: swf::Rectangle,
@@ -1591,23 +1650,11 @@ struct EditTextStaticData {
     is_device_font: bool,
 }
 
-unsafe impl<'gc> Collect for EditTextStaticData {
-    fn needs_trace() -> bool {
-        false
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Collect)]
+#[collect(require_static)]
 pub struct TextSelection {
     from: usize,
     to: usize,
-}
-
-unsafe impl Collect for TextSelection {
-    #[inline]
-    fn needs_trace() -> bool {
-        false
-    }
 }
 
 impl TextSelection {

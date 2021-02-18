@@ -14,7 +14,7 @@ use crate::ecma_conversions::f64_to_wrapping_u32;
 use crate::tag_utils::SwfSlice;
 use crate::vminterface::Instantiator;
 use crate::{avm_error, avm_warn};
-use gc_arena::{Collect, Gc, GcCell, MutationContext};
+use gc_arena::{Gc, GcCell, MutationContext};
 use indexmap::IndexMap;
 use rand::Rng;
 use smallvec::SmallVec;
@@ -179,8 +179,6 @@ unsafe impl<'gc> gc_arena::Collect for ActivationIdentifier<'gc> {
     fn trace(&self, _cc: gc_arena::CollectionContext) {}
 }
 
-#[derive(Collect)]
-#[collect(unsafe_drop)]
 pub struct Activation<'a, 'gc: 'a, 'gc_context: 'a> {
     /// Represents the SWF version of a given function.
     ///
@@ -787,7 +785,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         };
 
         if let Some((clip, frame)) = call_frame {
-            if frame <= u32::from(std::u16::MAX) {
+            if frame <= u32::from(u16::MAX) {
                 for action in clip.actions_on_frame(&mut self.context, frame as u16) {
                     let _ = self.run_child_frame_for_action(
                         "[Frame Call]",
@@ -1183,7 +1181,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let ret = if let Some(target) = self.target_clip() {
             if let Some(clip) = self.resolve_target_display_object(target, path, true)? {
                 let display_properties = self.context.avm1.display_properties;
-                let props = display_properties.write(self.context.gc_context);
+                let props = display_properties.read();
                 if let Some(property) = props.get_by_index(prop_index) {
                     property.get(self, clip)?
                 } else {
@@ -1267,7 +1265,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         }
 
         if let Some(fscommand) = fscommand::parse(&url) {
-            fscommand::handle(fscommand, self)?;
+            let fsargs = target;
+            fscommand::handle(fscommand, fsargs, self)?;
         } else {
             self.context
                 .navigator
@@ -1290,7 +1289,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let url = url_val.coerce_to_string(self)?;
 
         if let Some(fscommand) = fscommand::parse(&url) {
-            fscommand::handle(fscommand, self)?;
+            let fsargs = target.coerce_to_string(self)?.to_string();
+            fscommand::handle(fscommand, &fsargs, self)?;
             return Ok(FrameControl::Continue);
         }
 
@@ -2395,15 +2395,15 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     .finish();
 
                 match method {
-                    NavigationMethod::GET if url.find('?').is_none() => (
+                    NavigationMethod::Get if url.find('?').is_none() => (
                         Cow::Owned(format!("{}?{}", url, qstring)),
                         RequestOptions::get(),
                     ),
-                    NavigationMethod::GET => (
+                    NavigationMethod::Get => (
                         Cow::Owned(format!("{}&{}", url, qstring)),
                         RequestOptions::get(),
                     ),
-                    NavigationMethod::POST => (
+                    NavigationMethod::Post => (
                         url,
                         RequestOptions::post(Some((
                             qstring.as_bytes().to_owned(),

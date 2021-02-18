@@ -189,6 +189,7 @@ pub fn create_proto<'gc>(
         "nextFrame" => next_frame,
         "play" => play,
         "prevFrame" => prev_frame,
+        "setMask" => set_mask,
         "startDrag" => start_drag,
         "stop" => stop,
         "stopDrag" => stop_drag,
@@ -219,6 +220,7 @@ pub fn create_proto<'gc>(
         "enabled" => [enabled, set_enabled],
         "focusEnabled" => [focus_enabled, set_focus_enabled],
         "_lockroot" => [lock_root, set_lock_root],
+        "useHandCursor" => [use_hand_cursor, set_use_hand_cursor],
     );
 
     object.into()
@@ -430,8 +432,8 @@ fn begin_gradient_fill<'gc>(
             .and_then(|v| v.coerce_to_string(activation).ok())
             .as_deref()
         {
-            Some("linearRGB") => GradientInterpolation::LinearRGB,
-            _ => GradientInterpolation::RGB,
+            Some("linearRGB") => GradientInterpolation::LinearRgb,
+            _ => GradientInterpolation::Rgb,
         };
 
         let gradient = Gradient {
@@ -944,6 +946,26 @@ fn remove_movie_clip<'gc>(
     Ok(Value::Undefined)
 }
 
+fn set_mask<'gc>(
+    movie_clip: MovieClip<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let mask = args
+        .get(0)
+        .unwrap()
+        .coerce_to_object(activation)
+        .as_display_object();
+    let mc = DisplayObject::MovieClip(movie_clip);
+    let context = &mut activation.context;
+    mc.set_clip_depth(context.gc_context, 0);
+    mc.set_masker(context.gc_context, mask, true);
+    if let Some(m) = mask {
+        m.set_maskee(context.gc_context, Some(mc), true);
+    }
+    Ok(Value::Undefined)
+}
+
 fn start_drag<'gc>(
     movie_clip: MovieClip<'gc>,
     activation: &mut Activation<'_, 'gc, '_>,
@@ -1129,7 +1151,9 @@ pub fn get_url<'gc>(
     if let Some(url_val) = args.get(0) {
         let url = url_val.coerce_to_string(activation)?;
         if let Some(fscommand) = fscommand::parse(&url) {
-            fscommand::handle(fscommand, activation);
+            let fsargs_val = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let fsargs = fsargs_val.coerce_to_string(activation)?;
+            fscommand::handle(fscommand, &fsargs, activation);
             return Ok(Value::Undefined);
         }
 
@@ -1139,8 +1163,8 @@ pub fn get_url<'gc>(
             None
         };
         let method = match args.get(2) {
-            Some(Value::String(s)) if *s == "GET" => Some(NavigationMethod::GET),
-            Some(Value::String(s)) if *s == "POST" => Some(NavigationMethod::POST),
+            Some(Value::String(s)) if *s == "GET" => Some(NavigationMethod::Get),
+            Some(Value::String(s)) if *s == "POST" => Some(NavigationMethod::Post),
             _ => None,
         };
         let vars_method = method.map(|m| (m, activation.locals_into_form_values()));
@@ -1314,5 +1338,22 @@ fn set_lock_root<'gc>(
 ) -> Result<(), Error<'gc>> {
     let lock_root = value.as_bool(activation.current_swf_version());
     this.set_lock_root(activation.context.gc_context, lock_root);
+    Ok(())
+}
+
+fn use_hand_cursor<'gc>(
+    this: MovieClip<'gc>,
+    _activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    Ok(this.use_hand_cursor().into())
+}
+
+fn set_use_hand_cursor<'gc>(
+    this: MovieClip<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    value: Value<'gc>,
+) -> Result<(), Error<'gc>> {
+    let use_hand_cursor = value.as_bool(activation.current_swf_version());
+    this.set_use_hand_cursor(&mut activation.context, use_hand_cursor);
     Ok(())
 }

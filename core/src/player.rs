@@ -5,15 +5,15 @@ use crate::avm1::object::Object;
 use crate::avm1::property::Attribute;
 use crate::avm1::{Avm1, AvmString, ScriptObject, TObject, Timers, Value};
 use crate::avm2::{Avm2, Domain as Avm2Domain};
-use crate::backend::input::{InputBackend, MouseCursor};
-use crate::backend::locale::LocaleBackend;
-use crate::backend::navigator::{NavigatorBackend, RequestOptions};
-use crate::backend::storage::StorageBackend;
 use crate::backend::{
     audio::{AudioBackend, AudioManager},
+    locale::LocaleBackend,
     log::LogBackend,
+    navigator::{NavigatorBackend, RequestOptions},
     render::RenderBackend,
-    ui::UiBackend,
+    storage::StorageBackend,
+    ui::{MouseCursor, UiBackend},
+    video::VideoBackend,
 };
 use crate::config::Letterbox;
 use crate::context::{ActionQueue, ActionType, RenderContext, UpdateContext};
@@ -33,7 +33,7 @@ use gc_arena::{make_arena, ArenaParameters, Collect, GcCell};
 use instant::Instant;
 use log::info;
 use rand::{rngs::SmallRng, SeedableRng};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex, Weak};
@@ -139,11 +139,11 @@ make_arena!(GcArena, GcRoot);
 type Audio = Box<dyn AudioBackend>;
 type Navigator = Box<dyn NavigatorBackend>;
 type Renderer = Box<dyn RenderBackend>;
-type Input = Box<dyn InputBackend>;
 type Storage = Box<dyn StorageBackend>;
 type Locale = Box<dyn LocaleBackend>;
 type Log = Box<dyn LogBackend>;
-type UI = Box<dyn UiBackend>;
+type Ui = Box<dyn UiBackend>;
+type Video = Box<dyn VideoBackend>;
 
 pub struct Player {
     /// The version of the player we're emulating.
@@ -165,19 +165,19 @@ pub struct Player {
     is_playing: bool,
     needs_render: bool,
 
-    audio: Audio,
     renderer: Renderer,
-    pub navigator: Navigator,
-    input: Input,
+    audio: Audio,
+    navigator: Navigator,
+    storage: Storage,
     locale: Locale,
     log: Log,
-    pub user_interface: UI,
+    ui: Ui,
+    video: Video,
+
     transform_stack: TransformStack,
     view_matrix: Matrix,
     inverse_view_matrix: Matrix,
     view_bounds: BoundingBox,
-
-    storage: Storage,
 
     rng: SmallRng,
 
@@ -191,6 +191,7 @@ pub struct Player {
     /// This is how we support custom SWF framerates
     /// and compensate for small lags by "catching up" (up to MAX_FRAMES_PER_TICK).
     frame_accumulator: f64,
+    recent_run_frame_timings: VecDeque<f64>,
 
     /// Faked time passage for fooling hand-written busy-loop FPS limiters.
     time_offset: u32,
@@ -233,15 +234,16 @@ pub struct Player {
 
 #[allow(clippy::too_many_arguments)]
 impl Player {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         renderer: Renderer,
         audio: Audio,
         navigator: Navigator,
-        input: Input,
         storage: Storage,
         locale: Locale,
+        video: Video,
         log: Log,
-        user_interface: UI,
+        ui: Ui,
     ) -> Result<Arc<Mutex<Self>>, Error> {
         let fake_movie = Arc::new(SwfMovie::empty(NEWEST_PLAYER_VERSION));
         let movie_width = 550;
@@ -290,6 +292,7 @@ impl Player {
 
             frame_rate,
             frame_accumulator: 0.0,
+            recent_run_frame_timings: VecDeque::with_capacity(10),
             time_offset: 0,
 
             movie_width,
@@ -305,10 +308,10 @@ impl Player {
             renderer,
             audio,
             navigator,
-            input,
             locale,
             log,
-            user_interface,
+            ui,
+            video,
             self_reference: None,
             system: SystemProperties::default(),
             instance_counter: 0,
@@ -441,6 +444,41 @@ impl Player {
         self.audio.set_frame_rate(self.frame_rate);
     }
 
+    /// Get rough estimate of the max # of times we can update the frame.
+    ///
+    /// In some cases, we might want to update several times in a row.
+    /// For example, if the game runs at 60FPS, but the host runs at 30FPS
+    /// Or if for some reason the we miss a couple of frames.
+    /// However, if the code is simply slow, this is the opposite of what we want;
+    /// If run_frame() consistently takes say 100ms, we don't want `tick` to try to "catch up",
+    /// as this will only make it worse.
+    ///
+    /// This rough heuristic manages this job; for example if average run_frame()
+    /// takes more than 1/3 of frame_time, we shouldn't run it more than twice in a row.
+    /// This logic is far from perfect, as it doesn't take into account
+    /// that things like rendering also take time. But for now it's good enough.
+    fn max_frames_per_tick(&self) -> u32 {
+        const MAX_FRAMES_PER_TICK: u32 = 5;
+
+        if self.recent_run_frame_timings.is_empty() {
+            5
+        } else {
+            let frame_time = 1000.0 / self.frame_rate;
+            let average_run_frame_time = self.recent_run_frame_timings.iter().sum::<f64>()
+                / self.recent_run_frame_timings.len() as f64;
+            ((frame_time / average_run_frame_time) as u32)
+                .max(1)
+                .min(MAX_FRAMES_PER_TICK)
+        }
+    }
+
+    fn add_frame_timing(&mut self, elapsed: f64) {
+        self.recent_run_frame_timings.push_back(elapsed);
+        if self.recent_run_frame_timings.len() >= 10 {
+            self.recent_run_frame_timings.pop_front();
+        }
+    }
+
     pub fn tick(&mut self, dt: f64) {
         // Don't run until preloading is complete.
         // TODO: Eventually we want to stream content similar to the Flash player.
@@ -452,13 +490,18 @@ impl Player {
             self.frame_accumulator += dt;
             let frame_time = 1000.0 / self.frame_rate;
 
-            const MAX_FRAMES_PER_TICK: u32 = 5; // Sanity cap on frame tick.
+            let max_frames_per_tick = self.max_frames_per_tick();
             let mut frame = 0;
-            while frame < MAX_FRAMES_PER_TICK && self.frame_accumulator >= frame_time {
-                self.frame_accumulator -= frame_time;
-                self.run_frame();
-                frame += 1;
 
+            while frame < max_frames_per_tick && self.frame_accumulator >= frame_time {
+                let timer = Instant::now();
+                self.run_frame();
+                let elapsed = timer.elapsed().as_millis() as f64;
+
+                self.add_frame_timing(elapsed);
+
+                self.frame_accumulator -= frame_time;
+                frame += 1;
                 // The script probably tried implementing an FPS limiter with a busy loop.
                 // We fooled the busy loop by pretending that more time has passed that actually did.
                 // Then we need to actually pass this time, by decreasing frame_accumulator
@@ -545,7 +588,7 @@ impl Player {
 
     fn should_letterbox(&self) -> bool {
         self.letterbox == Letterbox::On
-            || (self.letterbox == Letterbox::Fullscreen && self.user_interface.is_fullscreen())
+            || (self.letterbox == Letterbox::Fullscreen && self.ui.is_fullscreen())
     }
 
     pub fn warn_on_unsupported_content(&self) -> bool {
@@ -582,8 +625,7 @@ impl Player {
                 key_code: KeyCode::V,
             } = event
             {
-                if self.input.is_key_down(KeyCode::Control) && self.input.is_key_down(KeyCode::Alt)
-                {
+                if self.ui.is_key_down(KeyCode::Control) && self.ui.is_key_down(KeyCode::Alt) {
                     self.mutate_with_update_context(|context| {
                         let mut dumper = VariableDumper::new("  ");
                         let levels = context.levels.clone();
@@ -618,8 +660,7 @@ impl Player {
                 key_code: KeyCode::D,
             } = event
             {
-                if self.input.is_key_down(KeyCode::Control) && self.input.is_key_down(KeyCode::Alt)
-                {
+                if self.ui.is_key_down(KeyCode::Control) && self.ui.is_key_down(KeyCode::Alt) {
                     self.mutate_with_update_context(|context| {
                         if context.avm1.show_debug_output() {
                             log::info!(
@@ -859,7 +900,7 @@ impl Player {
         // Update mouse cursor if it has changed.
         if new_cursor != self.mouse_cursor {
             self.mouse_cursor = new_cursor;
-            self.input.set_mouse_cursor(new_cursor)
+            self.ui.set_mouse_cursor(new_cursor)
         }
 
         hover_changed
@@ -890,7 +931,7 @@ impl Player {
             }
         });
         if is_action_script_3 && self.warn_on_unsupported_content {
-            self.user_interface.message("This SWF contains ActionScript 3 which is not yet supported by Ruffle. The movie may not work as intended.");
+            self.ui.display_unsupported_message();
         }
     }
 
@@ -978,16 +1019,24 @@ impl Player {
         &mut self.renderer
     }
 
+    pub fn storage(&self) -> &Storage {
+        &self.storage
+    }
+
+    pub fn storage_mut(&mut self) -> &mut Storage {
+        &mut self.storage
+    }
+
     pub fn destroy(self) -> Renderer {
         self.renderer
     }
 
-    pub fn input(&self) -> &Input {
-        &self.input
+    pub fn ui(&self) -> &Ui {
+        &self.ui
     }
 
-    pub fn input_mut(&mut self) -> &mut dyn InputBackend {
-        self.input.deref_mut()
+    pub fn ui_mut(&mut self) -> &mut Ui {
+        &mut self.ui
     }
 
     pub fn locale(&self) -> &Locale {
@@ -1170,7 +1219,7 @@ impl Player {
             renderer,
             audio,
             navigator,
-            input,
+            ui,
             rng,
             mouse_position,
             stage_width,
@@ -1181,6 +1230,7 @@ impl Player {
             storage,
             locale,
             logging,
+            video,
             needs_render,
             max_execution_duration,
             current_frame,
@@ -1192,7 +1242,7 @@ impl Player {
             self.renderer.deref_mut(),
             self.audio.deref_mut(),
             self.navigator.deref_mut(),
-            self.input.deref_mut(),
+            self.ui.deref_mut(),
             &mut self.rng,
             &self.mouse_pos,
             Twips::from_pixels(self.movie_width.into()),
@@ -1203,6 +1253,7 @@ impl Player {
             self.storage.deref_mut(),
             self.locale.deref_mut(),
             self.log.deref_mut(),
+            self.video.deref_mut(),
             &mut self.needs_render,
             self.max_execution_duration,
             &mut self.current_frame,
@@ -1237,7 +1288,7 @@ impl Player {
                 renderer,
                 audio,
                 navigator,
-                input,
+                ui,
                 action_queue,
                 gc_context,
                 levels,
@@ -1252,6 +1303,7 @@ impl Player {
                 storage,
                 locale,
                 log: logging,
+                video,
                 shared_objects,
                 unbound_text_fields,
                 timers,
@@ -1439,19 +1491,17 @@ impl Player {
     }
 }
 
+#[derive(Collect)]
+#[collect(no_drop)]
 pub struct DragObject<'gc> {
     /// The display object being dragged.
     pub display_object: DisplayObject<'gc>,
 
     /// The offset from the mouse position to the center of the clip.
+    #[collect(require_static)]
     pub offset: (Twips, Twips),
 
     /// The bounding rectangle where the clip will be maintained.
+    #[collect(require_static)]
     pub constraint: BoundingBox,
-}
-
-unsafe impl<'gc> gc_arena::Collect for DragObject<'gc> {
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.display_object.trace(cc);
-    }
 }

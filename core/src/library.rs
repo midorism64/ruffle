@@ -87,7 +87,7 @@ impl<'gc> MovieLibrary<'gc> {
         // TODO(Herschel): What is the behavior if id already exists?
         if !self.contains_character(id) {
             if let Character::Font(font) = character.clone() {
-                self.fonts.insert(font.descriptor(), font);
+                self.fonts.insert(font.descriptor().clone(), font);
             }
 
             self.characters.insert(id, character);
@@ -181,6 +181,7 @@ impl<'gc> MovieLibrary<'gc> {
             Character::MovieClip(movie_clip) => Ok(movie_clip.instantiate(gc_context)),
             Character::Button(button) => Ok(button.instantiate(gc_context)),
             Character::Text(text) => Ok(text.instantiate(gc_context)),
+            Character::Video(video) => Ok(video.instantiate(gc_context)),
             _ => Err("Not a DisplayObject".into()),
         }
     }

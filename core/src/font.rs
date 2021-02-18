@@ -4,6 +4,8 @@ use crate::prelude::*;
 use crate::transform::Transform;
 use gc_arena::{Collect, Gc, MutationContext};
 
+pub use swf::TextGridFit;
+
 /// Certain Flash routines measure text by rounding down to the nearest whole pixel.
 pub fn round_down_to_pixel(t: Twips) -> Twips {
     Twips::from_pixels(t.to_pixels().floor())
@@ -152,19 +154,19 @@ impl<'gc> Font<'gc> {
 
     /// Returns whether this font contains glyph shapes.
     /// If not, this font should be rendered as a device font.
-    pub fn has_glyphs(self) -> bool {
+    pub fn has_glyphs(&self) -> bool {
         !self.0.glyphs.is_empty()
     }
 
     /// Returns a glyph entry by index.
     /// Used by `Text` display objects.
-    pub fn get_glyph(self, i: usize) -> Option<Glyph> {
-        self.0.glyphs.get(i).cloned()
+    pub fn get_glyph(&self, i: usize) -> Option<&Glyph> {
+        self.0.glyphs.get(i)
     }
 
     /// Returns a glyph entry by character.
     /// Used by `EditText` display objects.
-    pub fn get_glyph_for_char(self, c: char) -> Option<Glyph> {
+    pub fn get_glyph_for_char(&self, c: char) -> Option<&Glyph> {
         // TODO: Properly handle UTF-16/out-of-bounds code points.
         let code_point = c as u16;
         if let Some(index) = self.0.code_point_to_glyph.get(&code_point) {
@@ -177,7 +179,7 @@ impl<'gc> Font<'gc> {
     /// Given a pair of characters, applies the offset that should be applied
     /// to the advance value between these two characters.
     /// Returns 0 twips if no kerning offset exists between these two characters.
-    pub fn get_kerning_offset(self, left: char, right: char) -> Twips {
+    pub fn get_kerning_offset(&self, left: char, right: char) -> Twips {
         // TODO: Properly handle UTF-16/out-of-bounds code points.
         let left_code_point = left as u16;
         let right_code_point = right as u16;
@@ -189,25 +191,25 @@ impl<'gc> Font<'gc> {
     }
 
     /// Return the leading for this font at a given height.
-    pub fn get_leading_for_height(self, height: Twips) -> Twips {
+    pub fn get_leading_for_height(&self, height: Twips) -> Twips {
         let scale = height.get() as f32 / self.scale();
 
         Twips::new((self.0.leading as f32 * scale) as i32)
     }
 
     /// Get the baseline from the top of the glyph at a given height.
-    pub fn get_baseline_for_height(self, height: Twips) -> Twips {
+    pub fn get_baseline_for_height(&self, height: Twips) -> Twips {
         let scale = height.get() as f32 / self.scale();
 
         Twips::new((self.0.ascent as f32 * scale) as i32)
     }
 
     /// Returns whether this font contains kerning information.
-    pub fn has_kerning_info(self) -> bool {
+    pub fn has_kerning_info(&self) -> bool {
         !self.0.kerning_pairs.is_empty()
     }
 
-    pub fn scale(self) -> f32 {
+    pub fn scale(&self) -> f32 {
         self.0.scale
     }
 
@@ -220,7 +222,7 @@ impl<'gc> Font<'gc> {
     /// closure. This corresponds to the series of drawing operations necessary
     /// to render the text on a single horizontal line.
     pub fn evaluate<FGlyph>(
-        self,
+        &self,
         text: &str,
         mut transform: Transform,
         params: EvalParameters,
@@ -259,7 +261,7 @@ impl<'gc> Font<'gc> {
     ///
     /// The `round` flag causes the returned coordinates to be rounded down to
     /// the nearest pixel.
-    pub fn measure(self, text: &str, params: EvalParameters, round: bool) -> (Twips, Twips) {
+    pub fn measure(&self, text: &str, params: EvalParameters, round: bool) -> (Twips, Twips) {
         let mut size = (Twips::new(0), Twips::new(0));
 
         self.evaluate(
@@ -300,7 +302,7 @@ impl<'gc> Font<'gc> {
     /// TODO: This function and, more generally, this entire file will need to
     /// be internationalized to implement AS3 `flash.text.engine`.
     pub fn wrap_line(
-        self,
+        &self,
         text: &str,
         params: EvalParameters,
         width: Twips,
@@ -370,8 +372,8 @@ impl<'gc> Font<'gc> {
         None
     }
 
-    pub fn descriptor(self) -> FontDescriptor {
-        self.0.descriptor.clone()
+    pub fn descriptor(&self) -> &FontDescriptor {
+        &self.0.descriptor
     }
 }
 
@@ -431,6 +433,55 @@ impl FontDescriptor {
     /// Get the italic-ness of the described font.
     pub fn italic(&self) -> bool {
         self.is_italic
+    }
+}
+
+/// The text rendering engine that a text field should use.
+/// This is controlled by the "Anti-alias" setting in the Flash IDE.
+/// Using "Anti-alias for readibility" switches to the "Advanced" text
+/// rendering engine.
+#[derive(Debug, PartialEq, Clone, Collect)]
+#[collect(require_static)]
+pub enum TextRenderSettings {
+    /// This text should render with the standard rendering engine.
+    /// Set via "Anti-alias for animation" in the Flash IDE.
+    Default,
+
+    /// This text should render with the advanced rendering engine.
+    /// Set via "Anti-alias for readibility" in the Flash IDE.
+    /// The parameters are set via the CSMTextSettings SWF tag.
+    /// Ruffle does not support this currently, but this also affects
+    /// hit-testing behavior.
+    Advanced {
+        grid_fit: TextGridFit,
+        thickness: f32,
+        sharpness: f32,
+    },
+}
+
+impl TextRenderSettings {
+    pub fn is_advanced(&self) -> bool {
+        matches!(self, TextRenderSettings::Advanced { .. })
+    }
+}
+
+impl Default for TextRenderSettings {
+    fn default() -> Self {
+        TextRenderSettings::Default
+    }
+}
+
+impl From<swf::CsmTextSettings> for TextRenderSettings {
+    fn from(settings: swf::CsmTextSettings) -> Self {
+        if settings.use_advanced_rendering {
+            TextRenderSettings::Advanced {
+                grid_fit: settings.grid_fit,
+                thickness: settings.thickness,
+                sharpness: settings.sharpness,
+            }
+        } else {
+            TextRenderSettings::Default
+        }
     }
 }
 

@@ -11,7 +11,8 @@ use std::sync::Arc;
 #[collect(no_drop)]
 pub struct Graphic<'gc>(GcCell<'gc, GraphicData<'gc>>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Collect)]
+#[collect(no_drop)]
 pub struct GraphicData<'gc> {
     base: DisplayObjectBase<'gc>,
     static_data: gc_arena::Gc<'gc, GraphicStatic>,
@@ -68,20 +69,16 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
         // Noop
     }
 
-    fn render(&self, context: &mut RenderContext) {
+    fn render_self(&self, context: &mut RenderContext) {
         if !self.world_bounds().intersects(&context.view_bounds) {
             // Off-screen; culled
             return;
         }
 
-        context.transform_stack.push(&*self.transform());
-
         context.renderer.render_shape(
             self.0.read().static_data.render_handle,
             context.transform_stack.transform(),
         );
-
-        context.transform_stack.pop();
     }
 
     fn hit_test_shape(
@@ -101,25 +98,13 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
     }
 }
 
-unsafe impl<'gc> gc_arena::Collect for GraphicData<'gc> {
-    fn trace(&self, cc: gc_arena::CollectionContext) {
-        self.base.trace(cc);
-        self.static_data.trace(cc);
-    }
-}
-
 /// Static data shared between all instances of a graphic.
 #[allow(dead_code)]
+#[derive(Collect)]
+#[collect(require_static)]
 struct GraphicStatic {
     id: CharacterId,
     shape: swf::Shape,
     render_handle: ShapeHandle,
     bounds: BoundingBox,
-}
-
-unsafe impl<'gc> gc_arena::Collect for GraphicStatic {
-    #[inline]
-    fn needs_trace() -> bool {
-        false
-    }
 }
