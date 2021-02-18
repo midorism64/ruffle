@@ -106,9 +106,9 @@ impl SwfStr {
     ///
     /// ```rust
     /// use swf::SwfStr;
-    /// use encoding_rs::WINDOWS_1252;
+    /// use encoding_rs::SHIFT_JIS;
     ///
-    /// let s = SwfStr::from_str_with_encoding("Hello, World!", WINDOWS_1252);
+    /// let s = SwfStr::from_str_with_encoding("Hello, World!", SHIFT_JIS);
     /// assert!(s.is_some());
     /// ```
     pub fn from_str_with_encoding<'a>(
@@ -132,17 +132,17 @@ impl SwfStr {
     ///
     /// ```rust
     /// use swf::SwfStr;
-    /// use encoding_rs::{UTF_8, WINDOWS_1252};
+    /// use encoding_rs::{UTF_8, SHIFT_JIS};
     ///
     /// assert_eq!(SwfStr::encoding_for_version(9), UTF_8);
-    /// assert_eq!(SwfStr::encoding_for_version(3), WINDOWS_1252);
+    /// assert_eq!(SwfStr::encoding_for_version(3), SHIFT_JIS);
     /// ```
     #[inline]
     pub fn encoding_for_version(swf_version: u8) -> &'static Encoding {
         if swf_version >= 6 {
             UTF_8
         } else {
-            WINDOWS_1252
+            SHIFT_JIS
         }
     }
 

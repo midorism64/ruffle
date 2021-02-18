@@ -3,7 +3,7 @@
 use crate::avm1::{opcode::OpCode, types::*};
 use crate::error::{Error, Result};
 use crate::read::SwfReadExt;
-use crate::string::{Encoding, SwfStr, UTF_8, WINDOWS_1252};
+use crate::string::{Encoding, SwfStr, UTF_8, WINDOWS_1252, SHIFT_JIS};
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{self, Read};
 
@@ -24,7 +24,7 @@ impl<'a> Reader<'a> {
                 UTF_8
             } else {
                 // TODO: Allow configurable encoding
-                WINDOWS_1252
+                SHIFT_JIS
             },
         }
     }
@@ -490,7 +490,7 @@ pub mod tests {
         assert_eq!(
             action,
             Action::DefineFunction {
-                name: SwfStr::from_str_with_encoding("foo", WINDOWS_1252).unwrap(),
+                name: SwfStr::from_str_with_encoding("foo", SHIFT_JIS).unwrap(),
                 params: vec![],
                 actions: &[0x96, 0x06, 0x00, 0x00, 0x74, 0x65, 0x73, 0x74, 0x00, 0x26],
             }
@@ -502,7 +502,7 @@ pub mod tests {
             assert_eq!(
                 action,
                 Action::Push(vec![Value::Str(
-                    SwfStr::from_str_with_encoding("test", WINDOWS_1252).unwrap()
+                    SwfStr::from_str_with_encoding("test", SHIFT_JIS).unwrap()
                 )])
             );
         }
