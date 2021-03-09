@@ -18,6 +18,7 @@ use std::string::FromUtf8Error;
 use std::sync::{Arc, Mutex, Weak};
 use thiserror::Error;
 use url::form_urlencoded;
+use swf::SwfStr;
 
 pub type Handle = Index;
 
@@ -621,8 +622,14 @@ impl<'gc> Loader<'gc> {
                     uc.reborrow(),
                     ActivationIdentifier::root("[Form Loader]"),
                 );
+                let datastr =
+                if activation.context.system.use_codepage {
+                    encoding_rs::SHIFT_JIS.decode(&data).0
+                } else {
+                    SwfStr::encoding_for_version(activation.swf_version()).decode(&data).0
+                };
 
-                for (k, v) in form_urlencoded::parse(&data) {
+                for (k, v) in form_urlencoded::parse(&datastr.as_bytes()) {
                     that.set(
                         &k,
                         AvmString::new(activation.context.gc_context, v.into_owned()).into(),
