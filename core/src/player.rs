@@ -409,6 +409,7 @@ impl Player {
             } else {
                 None
             };
+            root.construct_frame(context);
             root.post_instantiation(context, root, flashvars, Instantiator::Movie, false);
             root.set_default_root_name(context);
             context.levels.insert(0, root);
@@ -943,8 +944,28 @@ impl Player {
             // want to run frames on
             let levels: Vec<_> = update_context.levels.values().copied().collect();
 
-            for level in levels {
+            if let Some(level) = levels.first() {
+                level.exit_frame(update_context);
+            }
+
+            if let Some(level) = levels.first() {
+                level.enter_frame(update_context);
+            }
+
+            for level in levels.iter() {
+                level.construct_frame(update_context);
+            }
+
+            if let Some(level) = levels.first() {
+                level.frame_constructed(update_context);
+            }
+
+            for level in levels.iter() {
                 level.run_frame(update_context);
+            }
+
+            for level in levels.iter() {
+                level.run_frame_scripts(update_context);
             }
 
             update_context.update_sounds();

@@ -6,13 +6,13 @@ edition = "2018"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-wgpu = { git = "https://github.com/gfx-rs/wgpu-rs", rev = "6cfd4243603b495fed568445792feed51e78aac2" }
-image = "0.23.13"
+wgpu = "0.7.0"
+image = "0.23.14"
 jpeg-decoder = "0.1.22"
 log = "0.4"
 lyon = "0.17.5"
 ruffle_core = { path = "../../core" }
-futures = "0.3.12"
+futures = "0.3.13"
 bytemuck = { version = "1.5.1", features = ["derive"] }
 raw-window-handle = "0.3.3"
 clap = { version = "3.0.0-beta.2", optional = true }

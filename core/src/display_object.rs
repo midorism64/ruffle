@@ -1,14 +1,14 @@
 use crate::avm1::{
     Error as Avm1Error, Object as Avm1Object, TObject as Avm1TObject, Value as Avm1Value,
 };
-use crate::avm2::{TObject as Avm2TObject, Value as Avm2Value};
+use crate::avm2::{Avm2, Event as Avm2Event, TObject as Avm2TObject, Value as Avm2Value};
 use crate::context::{RenderContext, UpdateContext};
 use crate::player::NEWEST_PLAYER_VERSION;
 use crate::prelude::*;
 use crate::tag_utils::SwfMovie;
 use crate::transform::Transform;
 use crate::types::{Degrees, Percent};
-use crate::vminterface::Instantiator;
+use crate::vminterface::{AvmType, Instantiator};
 use bitflags::bitflags;
 use gc_arena::{Collect, MutationContext};
 use ruffle_macros::enum_trait_object;
@@ -130,7 +130,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.place_frame
     }
 
-    fn set_place_frame(&mut self, _context: MutationContext<'gc, '_>, frame: u16) {
+    fn set_place_frame(&mut self, frame: u16) {
         self.place_frame = frame;
     }
 
@@ -142,11 +142,11 @@ impl<'gc> DisplayObjectBase<'gc> {
         &self.transform.matrix
     }
 
-    fn matrix_mut(&mut self, _context: MutationContext<'gc, '_>) -> &mut Matrix {
+    fn matrix_mut(&mut self) -> &mut Matrix {
         &mut self.transform.matrix
     }
 
-    fn set_matrix(&mut self, _context: MutationContext<'gc, '_>, matrix: &Matrix) {
+    fn set_matrix(&mut self, matrix: &Matrix) {
         self.transform.matrix = *matrix;
         self.flags -= DisplayObjectFlags::SCALE_ROTATION_CACHED;
     }
@@ -159,11 +159,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         &mut self.transform.color_transform
     }
 
-    fn set_color_transform(
-        &mut self,
-        _context: MutationContext<'gc, '_>,
-        color_transform: &ColorTransform,
-    ) {
+    fn set_color_transform(&mut self, color_transform: &ColorTransform) {
         self.transform.color_transform = *color_transform;
     }
 
@@ -296,7 +292,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         &self.name
     }
 
-    fn set_name(&mut self, _context: MutationContext<'gc, '_>, name: &str) {
+    fn set_name(&mut self, name: &str) {
         self.name = name.to_string();
     }
 
@@ -313,7 +309,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.clip_depth
     }
 
-    fn set_clip_depth(&mut self, _context: MutationContext<'gc, '_>, depth: Depth) {
+    fn set_clip_depth(&mut self, depth: Depth) {
         self.clip_depth = depth;
     }
 
@@ -321,11 +317,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.parent
     }
 
-    fn set_parent(
-        &mut self,
-        _context: MutationContext<'gc, '_>,
-        parent: Option<DisplayObject<'gc>>,
-    ) {
+    fn set_parent(&mut self, parent: Option<DisplayObject<'gc>>) {
         self.parent = parent;
     }
 
@@ -333,11 +325,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.prev_sibling
     }
 
-    fn set_prev_sibling(
-        &mut self,
-        _context: MutationContext<'gc, '_>,
-        node: Option<DisplayObject<'gc>>,
-    ) {
+    fn set_prev_sibling(&mut self, node: Option<DisplayObject<'gc>>) {
         self.prev_sibling = node;
     }
 
@@ -345,11 +333,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.next_sibling
     }
 
-    fn set_next_sibling(
-        &mut self,
-        _context: MutationContext<'gc, '_>,
-        node: Option<DisplayObject<'gc>>,
-    ) {
+    fn set_next_sibling(&mut self, node: Option<DisplayObject<'gc>>) {
         self.next_sibling = node;
     }
 
@@ -358,11 +342,7 @@ impl<'gc> DisplayObjectBase<'gc> {
     }
 
     fn set_removed(&mut self, value: bool) {
-        if value {
-            self.flags |= DisplayObjectFlags::REMOVED;
-        } else {
-            self.flags -= DisplayObjectFlags::REMOVED;
-        }
+        self.flags.set(DisplayObjectFlags::REMOVED, value);
     }
 
     fn sound_transform(&self) -> &SoundTransform {
@@ -378,11 +358,7 @@ impl<'gc> DisplayObjectBase<'gc> {
     }
 
     fn set_visible(&mut self, value: bool) {
-        if value {
-            self.flags |= DisplayObjectFlags::VISIBLE;
-        } else {
-            self.flags -= DisplayObjectFlags::VISIBLE;
-        }
+        self.flags.set(DisplayObjectFlags::VISIBLE, value);
     }
 
     fn lock_root(&self) -> bool {
@@ -390,11 +366,7 @@ impl<'gc> DisplayObjectBase<'gc> {
     }
 
     fn set_lock_root(&mut self, value: bool) {
-        if value {
-            self.flags |= DisplayObjectFlags::LOCK_ROOT;
-        } else {
-            self.flags -= DisplayObjectFlags::LOCK_ROOT;
-        }
+        self.flags.set(DisplayObjectFlags::LOCK_ROOT, value);
     }
 
     fn transformed_by_script(&self) -> bool {
@@ -403,11 +375,8 @@ impl<'gc> DisplayObjectBase<'gc> {
     }
 
     fn set_transformed_by_script(&mut self, value: bool) {
-        if value {
-            self.flags |= DisplayObjectFlags::TRANSFORMED_BY_SCRIPT;
-        } else {
-            self.flags -= DisplayObjectFlags::TRANSFORMED_BY_SCRIPT;
-        }
+        self.flags
+            .set(DisplayObjectFlags::TRANSFORMED_BY_SCRIPT, value);
     }
 
     fn placed_by_script(&self) -> bool {
@@ -415,11 +384,7 @@ impl<'gc> DisplayObjectBase<'gc> {
     }
 
     fn set_placed_by_script(&mut self, value: bool) {
-        if value {
-            self.flags |= DisplayObjectFlags::PLACED_BY_SCRIPT;
-        } else {
-            self.flags -= DisplayObjectFlags::PLACED_BY_SCRIPT;
-        }
+        self.flags.set(DisplayObjectFlags::PLACED_BY_SCRIPT, value);
     }
 
     fn instantiated_by_timeline(&self) -> bool {
@@ -428,11 +393,8 @@ impl<'gc> DisplayObjectBase<'gc> {
     }
 
     fn set_instantiated_by_timeline(&mut self, value: bool) {
-        if value {
-            self.flags |= DisplayObjectFlags::INSTANTIATED_BY_TIMELINE;
-        } else {
-            self.flags -= DisplayObjectFlags::INSTANTIATED_BY_TIMELINE;
-        }
+        self.flags
+            .set(DisplayObjectFlags::INSTANTIATED_BY_TIMELINE, value);
     }
 
     fn swf_version(&self) -> u8 {
@@ -448,14 +410,14 @@ impl<'gc> DisplayObjectBase<'gc> {
     fn masker(&self) -> Option<DisplayObject<'gc>> {
         self.masker
     }
-    fn set_masker(&mut self, _context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>) {
+    fn set_masker(&mut self, node: Option<DisplayObject<'gc>>) {
         self.masker = node;
     }
 
     fn maskee(&self) -> Option<DisplayObject<'gc>> {
         self.maskee
     }
-    fn set_maskee(&mut self, _context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>) {
+    fn set_maskee(&mut self, node: Option<DisplayObject<'gc>>) {
         self.maskee = node;
     }
 }
@@ -523,17 +485,17 @@ pub trait TDisplayObject<'gc>:
     }
 
     fn place_frame(&self) -> u16;
-    fn set_place_frame(&self, context: MutationContext<'gc, '_>, frame: u16);
+    fn set_place_frame(&self, gc_context: MutationContext<'gc, '_>, frame: u16);
 
     fn transform(&self) -> Ref<Transform>;
     fn matrix(&self) -> Ref<Matrix>;
-    fn matrix_mut(&self, context: MutationContext<'gc, '_>) -> RefMut<Matrix>;
-    fn set_matrix(&self, context: MutationContext<'gc, '_>, matrix: &Matrix);
+    fn matrix_mut(&self, gc_context: MutationContext<'gc, '_>) -> RefMut<Matrix>;
+    fn set_matrix(&self, gc_context: MutationContext<'gc, '_>, matrix: &Matrix);
     fn color_transform(&self) -> Ref<ColorTransform>;
-    fn color_transform_mut(&self, context: MutationContext<'gc, '_>) -> RefMut<ColorTransform>;
+    fn color_transform_mut(&self, gc_context: MutationContext<'gc, '_>) -> RefMut<ColorTransform>;
     fn set_color_transform(
         &self,
-        context: MutationContext<'gc, '_>,
+        gc_context: MutationContext<'gc, '_>,
         color_transform: &ColorTransform,
     );
 
@@ -545,19 +507,12 @@ pub trait TDisplayObject<'gc>:
             matrix = *display_object.matrix() * matrix;
             node = display_object.parent();
         }
-
         matrix
     }
 
     /// Returns the matrix for transforming from global stage to this object's local space.
     fn global_to_local_matrix(&self) -> Matrix {
-        let mut node = self.parent();
-        let mut matrix = *self.matrix();
-        while let Some(display_object) = node {
-            matrix = *display_object.matrix() * matrix;
-            node = display_object.parent();
-        }
-
+        let mut matrix = self.local_to_global_matrix();
         matrix.invert();
         matrix
     }
@@ -656,12 +611,14 @@ pub trait TDisplayObject<'gc>:
         self.set_scale_x(gc_context, Percent::from_unit(new_scale_x));
         self.set_scale_y(gc_context, Percent::from_unit(new_scale_y));
     }
+
     /// Gets the pixel height of the AABB containing this display object in local space.
     /// Returned by the ActionScript `_height`/`height` properties.
     fn height(&self) -> f64 {
         let bounds = self.local_bounds();
         (bounds.y_max.saturating_sub(bounds.y_min)).to_pixels()
     }
+
     /// Sets the pixel height of this display object in local space.
     /// Set by the ActionScript `_height`/`height` properties.
     /// This does odd things on rotated clips to match the behavior of Flash.
@@ -693,6 +650,7 @@ pub trait TDisplayObject<'gc>:
         self.set_scale_x(gc_context, Percent::from_unit(new_scale_x));
         self.set_scale_y(gc_context, Percent::from_unit(new_scale_y));
     }
+
     /// The opacity of this display object.
     /// 1 is fully opaque.
     /// Returned by the `_alpha`/`alpha` ActionScript properties.
@@ -702,8 +660,9 @@ pub trait TDisplayObject<'gc>:
     /// 1 is fully opaque.
     /// Set by the `_alpha`/`alpha` ActionScript properties.
     fn set_alpha(&self, gc_context: MutationContext<'gc, '_>, value: f64);
+
     fn name(&self) -> Ref<str>;
-    fn set_name(&self, context: MutationContext<'gc, '_>, name: &str);
+    fn set_name(&self, gc_context: MutationContext<'gc, '_>, name: &str);
 
     /// Returns the dot-syntax path to this display object, e.g. `_level0.foo.clip`
     fn path(&self) -> String {
@@ -747,24 +706,32 @@ pub trait TDisplayObject<'gc>:
     }
 
     fn clip_depth(&self) -> Depth;
-    fn set_clip_depth(&self, context: MutationContext<'gc, '_>, depth: Depth);
+    fn set_clip_depth(&self, gc_context: MutationContext<'gc, '_>, depth: Depth);
     fn parent(&self) -> Option<DisplayObject<'gc>>;
-    fn set_parent(&self, context: MutationContext<'gc, '_>, parent: Option<DisplayObject<'gc>>);
+    fn set_parent(&self, gc_context: MutationContext<'gc, '_>, parent: Option<DisplayObject<'gc>>);
     fn prev_sibling(&self) -> Option<DisplayObject<'gc>>;
-    fn set_prev_sibling(&self, context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>);
+    fn set_prev_sibling(
+        &self,
+        gc_context: MutationContext<'gc, '_>,
+        node: Option<DisplayObject<'gc>>,
+    );
     fn next_sibling(&self) -> Option<DisplayObject<'gc>>;
-    fn set_next_sibling(&self, context: MutationContext<'gc, '_>, node: Option<DisplayObject<'gc>>);
+    fn set_next_sibling(
+        &self,
+        gc_context: MutationContext<'gc, '_>,
+        node: Option<DisplayObject<'gc>>,
+    );
     fn masker(&self) -> Option<DisplayObject<'gc>>;
     fn set_masker(
         &self,
-        context: MutationContext<'gc, '_>,
+        gc_context: MutationContext<'gc, '_>,
         node: Option<DisplayObject<'gc>>,
         remove_old_link: bool,
     );
     fn maskee(&self) -> Option<DisplayObject<'gc>>;
     fn set_maskee(
         &self,
-        context: MutationContext<'gc, '_>,
+        gc_context: MutationContext<'gc, '_>,
         node: Option<DisplayObject<'gc>>,
         remove_old_link: bool,
     );
@@ -795,7 +762,7 @@ pub trait TDisplayObject<'gc>:
         None
     }
     fn removed(&self) -> bool;
-    fn set_removed(&self, context: MutationContext<'gc, '_>, value: bool);
+    fn set_removed(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
     /// Whether this display object is visible.
     /// Invisible objects are not rendered, but otherwise continue to exist normally.
@@ -805,7 +772,7 @@ pub trait TDisplayObject<'gc>:
     /// Sets whether this display object will be visible.
     /// Invisible objects are not rendered, but otherwise continue to exist normally.
     /// Returned by the `_visible`/`visible` ActionScript properties.
-    fn set_visible(&self, context: MutationContext<'gc, '_>, value: bool);
+    fn set_visible(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
     /// The sound transform for sounds played inside this display object.
     fn sound_transform(&self) -> Ref<SoundTransform>;
@@ -823,7 +790,7 @@ pub trait TDisplayObject<'gc>:
 
     /// Sets whether this display object is used as the _root of itself and its children.
     /// Returned by the `_lockroot` ActionScript property.
-    fn set_lock_root(&self, context: MutationContext<'gc, '_>, value: bool);
+    fn set_lock_root(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
     /// Whether this display object has been transformed by ActionScript.
     /// When this flag is set, changes from SWF `PlaceObject` tags are ignored.
@@ -831,12 +798,12 @@ pub trait TDisplayObject<'gc>:
 
     /// Sets whether this display object has been transformed by ActionScript.
     /// When this flag is set, changes from SWF `PlaceObject` tags are ignored.
-    fn set_transformed_by_script(&self, context: MutationContext<'gc, '_>, value: bool);
+    fn set_transformed_by_script(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
     /// Called whenever the focus tracker has deemed this display object worthy, or no longer worthy,
     /// of being the currently focused object.
     /// This should only be called by the focus manager. To change a focus, go through that.
-    fn on_focus_changed(&self, _context: MutationContext<'gc, '_>, _focused: bool) {}
+    fn on_focus_changed(&self, _gc_context: MutationContext<'gc, '_>, _focused: bool) {}
 
     /// Whether or not this clip may be focusable for keyboard input.
     fn is_focusable(&self) -> bool {
@@ -851,7 +818,7 @@ pub trait TDisplayObject<'gc>:
     /// Sets whether this display object has been created by ActionScript 3.
     /// When this flag is set, changes from SWF `RemoveObject` tags are
     /// ignored.
-    fn set_placed_by_script(&self, context: MutationContext<'gc, '_>, value: bool);
+    fn set_placed_by_script(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
     /// Whether this display object has been instantiated by the timeline.
     /// When this flag is set, attempts to change the object's name from AVM2
@@ -861,7 +828,7 @@ pub trait TDisplayObject<'gc>:
     /// Sets whether this display object has been instantiated by the timeline.
     /// When this flag is set, attempts to change the object's name from AVM2
     /// throw an exception.
-    fn set_instantiated_by_timeline(&self, context: MutationContext<'gc, '_>, value: bool);
+    fn set_instantiated_by_timeline(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
     /// Executes and propagates the given clip event.
     /// Events execute inside-out; the deepest child will react first, followed by its parent, and
@@ -874,7 +841,79 @@ pub trait TDisplayObject<'gc>:
         ClipEventResult::NotHandled
     }
 
+    /// Emit an `enterFrame` event on this DisplayObject and any children it
+    /// may have.
+    fn enter_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        let mut enter_frame_evt = Avm2Event::new("enterFrame");
+        enter_frame_evt.set_bubbles(false);
+        enter_frame_evt.set_cancelable(false);
+
+        let dobject_proto = context.avm2.prototypes().display_object;
+
+        if let Err(e) = Avm2::broadcast_event(context, enter_frame_evt, dobject_proto) {
+            log::error!(
+                "Encountered AVM2 error when broadcasting enterFrame event: {}",
+                e
+            );
+        }
+    }
+
+    /// Construct all display objects that the timeline indicates should exist
+    /// this frame, and their children.
+    ///
+    /// This function should ensure the following, from the point of view of
+    /// downstream VMs:
+    ///
+    /// 1. That the object itself has been allocated, if not constructed
+    /// 2. That newly created children have been instantiated and are present
+    ///    as properties on the class
+    fn construct_frame(&self, _context: &mut UpdateContext<'_, 'gc, '_>) {}
+
+    /// Execute all other timeline actions on this object and it's children.
     fn run_frame(&self, _context: &mut UpdateContext<'_, 'gc, '_>) {}
+
+    /// Emit an `frameConstructed` event on this DisplayObject and any children it
+    /// may have.
+    fn frame_constructed(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        let mut frame_constructed_evt = Avm2Event::new("frameConstructed");
+        frame_constructed_evt.set_bubbles(false);
+        frame_constructed_evt.set_cancelable(false);
+
+        let dobject_proto = context.avm2.prototypes().display_object;
+
+        if let Err(e) = Avm2::broadcast_event(context, frame_constructed_evt, dobject_proto) {
+            log::error!(
+                "Encountered AVM2 error when broadcasting frameConstructed event: {}",
+                e
+            );
+        }
+    }
+
+    /// Run any frame scripts (if they exist and this object needs to run them).
+    fn run_frame_scripts(self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        if let Some(container) = self.as_container() {
+            for child in container.iter_execution_list() {
+                child.run_frame_scripts(context);
+            }
+        }
+    }
+
+    /// Emit an `exitFrame` broadcast event.
+    fn exit_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        let mut exit_frame_evt = Avm2Event::new("exitFrame");
+        exit_frame_evt.set_bubbles(false);
+        exit_frame_evt.set_cancelable(false);
+
+        let dobject_proto = context.avm2.prototypes().display_object;
+
+        if let Err(e) = Avm2::broadcast_event(context, exit_frame_evt, dobject_proto) {
+            log::error!(
+                "Encountered AVM2 error when broadcasting exitFrame event: {}",
+                e
+            );
+        }
+    }
+
     fn render_self(&self, _context: &mut RenderContext<'_, 'gc>) {}
 
     fn render(&self, context: &mut RenderContext<'_, 'gc>) {
@@ -916,6 +955,12 @@ pub trait TDisplayObject<'gc>:
             for child in ctr.iter_execution_list() {
                 child.unload(context);
             }
+        }
+
+        if let Some(node) = self.maskee() {
+            node.set_masker(context.gc_context, None, true);
+        } else if let Some(node) = self.masker() {
+            node.set_maskee(context.gc_context, None, true);
         }
 
         // Unregister any text field variable bindings, and replace them on the unbound list.
@@ -1037,8 +1082,8 @@ pub trait TDisplayObject<'gc>:
 
     /// Tests if a given object's world bounds intersects with the world bounds
     /// of this object.
-    fn hit_test_object(&self, rhs: DisplayObject<'gc>) -> bool {
-        self.world_bounds().intersects(&rhs.world_bounds())
+    fn hit_test_object(&self, other: DisplayObject<'gc>) -> bool {
+        self.world_bounds().intersects(&other.world_bounds())
     }
 
     /// Tests if a given stage position point intersects within this object, considering the art.
@@ -1048,7 +1093,7 @@ pub trait TDisplayObject<'gc>:
         pos: (Twips, Twips),
     ) -> bool {
         // Default to using bounding box.
-        self.world_bounds().contains(pos)
+        self.hit_test_bounds(pos)
     }
 
     fn mouse_pick(
@@ -1085,6 +1130,16 @@ pub trait TDisplayObject<'gc>:
         self.parent().and_then(|p| p.movie())
     }
 
+    /// Return the VM that this object belongs to.
+    ///
+    /// This function panics if the display object has no defining movie.
+    fn vm_type(&self, context: &mut UpdateContext<'_, 'gc, '_>) -> AvmType {
+        let movie = self.movie().unwrap();
+        let library = context.library.library_for_movie_mut(movie);
+
+        library.avm_type()
+    }
+
     fn instantiate(&self, gc_context: MutationContext<'gc, '_>) -> DisplayObject<'gc>;
     fn as_ptr(&self) -> *const DisplayObjectPtr;
 
@@ -1102,7 +1157,7 @@ pub trait TDisplayObject<'gc>:
 
     /// Obtain the top-most parent of the display tree hierarchy, if a suitable
     /// object exists.
-    fn root(&self) -> Option<DisplayObject<'gc>> {
+    fn root(&self, context: &UpdateContext<'_, 'gc, '_>) -> Option<DisplayObject<'gc>> {
         let mut parent = if self.lock_root() {
             None
         } else {
@@ -1127,11 +1182,33 @@ pub trait TDisplayObject<'gc>:
             if let Avm1Value::Object(object) = self.object() {
                 object.as_display_object()
             } else if let Avm2Value::Object(object) = self.object2() {
-                object.as_display_object()
+                if self.is_on_stage(context) {
+                    object.as_display_object()
+                } else {
+                    None
+                }
             } else {
                 None
             }
         })
+    }
+
+    /// Determine if this display object is currently on the stage.
+    fn is_on_stage(self, context: &UpdateContext<'_, 'gc, '_>) -> bool {
+        let mut ancestor = self.parent();
+        while let Some(parent) = ancestor {
+            if parent.parent().is_some() {
+                ancestor = parent.parent();
+            } else {
+                break;
+            }
+        }
+
+        let ancestor = ancestor.unwrap_or_else(|| self.into());
+        context
+            .levels
+            .values()
+            .any(|o| DisplayObject::ptr_eq(*o, ancestor))
     }
 
     /// Obtain the top-most parent of the display tree hierarchy, or some kind
@@ -1140,8 +1217,12 @@ pub trait TDisplayObject<'gc>:
     /// AVM1 cannot normally access rootless display objects, so this will
     /// generate an AVM1 runtime error (which might also be unexpected, but
     /// less unexpected than a panic).
-    fn avm1_root(&self) -> Result<DisplayObject<'gc>, Avm1Error<'gc>> {
-        self.root().ok_or(Avm1Error::InvalidDisplayObjectHierarchy)
+    fn avm1_root(
+        &self,
+        context: &UpdateContext<'_, 'gc, '_>,
+    ) -> Result<DisplayObject<'gc>, Avm1Error<'gc>> {
+        self.root(context)
+            .ok_or(Avm1Error::InvalidDisplayObjectHierarchy)
     }
 
     /// Assigns a default instance name `instanceN` to this object.
@@ -1199,7 +1280,7 @@ macro_rules! impl_display_object_sansbounds {
             self.0.read().$field.place_frame()
         }
         fn set_place_frame(&self, context: gc_arena::MutationContext<'gc, '_>, frame: u16) {
-            self.0.write(context).$field.set_place_frame(context, frame)
+            self.0.write(context).$field.set_place_frame(frame)
         }
         fn transform(&self) -> std::cell::Ref<crate::transform::Transform> {
             std::cell::Ref::map(self.0.read(), |o| o.$field.transform())
@@ -1211,7 +1292,7 @@ macro_rules! impl_display_object_sansbounds {
             &self,
             context: gc_arena::MutationContext<'gc, '_>,
         ) -> std::cell::RefMut<swf::Matrix> {
-            std::cell::RefMut::map(self.0.write(context), |o| o.$field.matrix_mut(context))
+            std::cell::RefMut::map(self.0.write(context), |o| o.$field.matrix_mut())
         }
         fn color_transform(&self) -> std::cell::Ref<crate::color_transform::ColorTransform> {
             std::cell::Ref::map(self.0.read(), |o| o.$field.color_transform())
@@ -1230,7 +1311,7 @@ macro_rules! impl_display_object_sansbounds {
             self.0
                 .write(context)
                 .$field
-                .set_color_transform(context, color_transform)
+                .set_color_transform(color_transform)
         }
         fn rotation(&self, gc_context: gc_arena::MutationContext<'gc, '_>) -> Degrees {
             self.0.write(gc_context).$field.rotation()
@@ -1260,7 +1341,7 @@ macro_rules! impl_display_object_sansbounds {
             std::cell::Ref::map(self.0.read(), |o| o.$field.name())
         }
         fn set_name(&self, context: gc_arena::MutationContext<'gc, '_>, name: &str) {
-            self.0.write(context).$field.set_name(context, name)
+            self.0.write(context).$field.set_name(name)
         }
         fn clip_depth(&self) -> crate::prelude::Depth {
             self.0.read().$field.clip_depth()
@@ -1270,7 +1351,7 @@ macro_rules! impl_display_object_sansbounds {
             context: gc_arena::MutationContext<'gc, '_>,
             depth: crate::prelude::Depth,
         ) {
-            self.0.write(context).$field.set_clip_depth(context, depth)
+            self.0.write(context).$field.set_clip_depth(depth)
         }
         fn parent(&self) -> Option<crate::display_object::DisplayObject<'gc>> {
             self.0.read().$field.parent()
@@ -1280,7 +1361,7 @@ macro_rules! impl_display_object_sansbounds {
             context: gc_arena::MutationContext<'gc, '_>,
             parent: Option<crate::display_object::DisplayObject<'gc>>,
         ) {
-            self.0.write(context).$field.set_parent(context, parent)
+            self.0.write(context).$field.set_parent(parent)
         }
         fn prev_sibling(&self) -> Option<DisplayObject<'gc>> {
             self.0.read().$field.prev_sibling()
@@ -1290,7 +1371,7 @@ macro_rules! impl_display_object_sansbounds {
             context: gc_arena::MutationContext<'gc, '_>,
             node: Option<DisplayObject<'gc>>,
         ) {
-            self.0.write(context).$field.set_prev_sibling(context, node);
+            self.0.write(context).$field.set_prev_sibling(node);
         }
         fn next_sibling(&self) -> Option<DisplayObject<'gc>> {
             self.0.read().$field.next_sibling()
@@ -1300,7 +1381,7 @@ macro_rules! impl_display_object_sansbounds {
             context: gc_arena::MutationContext<'gc, '_>,
             node: Option<DisplayObject<'gc>>,
         ) {
-            self.0.write(context).$field.set_next_sibling(context, node);
+            self.0.write(context).$field.set_next_sibling(node);
         }
         fn masker(&self) -> Option<DisplayObject<'gc>> {
             self.0.read().$field.masker()
@@ -1316,7 +1397,7 @@ macro_rules! impl_display_object_sansbounds {
                     old_masker.set_maskee(context, None, false);
                 }
             }
-            self.0.write(context).$field.set_masker(context, node);
+            self.0.write(context).$field.set_masker(node);
         }
         fn maskee(&self) -> Option<DisplayObject<'gc>> {
             self.0.read().$field.maskee()
@@ -1332,7 +1413,7 @@ macro_rules! impl_display_object_sansbounds {
                     old_maskee.set_masker(context, None, false);
                 }
             }
-            self.0.write(context).$field.set_maskee(context, node);
+            self.0.write(context).$field.set_maskee(node);
         }
         fn removed(&self) -> bool {
             self.0.read().$field.removed()
@@ -1433,7 +1514,7 @@ macro_rules! impl_display_object {
             self.0.write(gc_context).$field.set_y(value)
         }
         fn set_matrix(&self, context: gc_arena::MutationContext<'gc, '_>, matrix: &swf::Matrix) {
-            self.0.write(context).$field.set_matrix(context, matrix)
+            self.0.write(context).$field.set_matrix(matrix)
         }
     };
 }

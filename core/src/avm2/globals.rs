@@ -6,8 +6,8 @@ use crate::avm2::domain::Domain;
 use crate::avm2::method::NativeMethod;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::{
-    implicit_deriver, ArrayObject, DomainObject, FunctionObject, NamespaceObject, Object,
-    PrimitiveObject, ScriptObject, StageObject, TObject, XmlObject,
+    implicit_deriver, ArrayObject, ByteArrayObject, DomainObject, FunctionObject, NamespaceObject,
+    Object, PrimitiveObject, ScriptObject, StageObject, TObject, XmlObject,
 };
 use crate::avm2::scope::Scope;
 use crate::avm2::script::Script;
@@ -27,6 +27,7 @@ mod math;
 mod namespace;
 mod number;
 mod object;
+mod regexp;
 mod string;
 mod r#uint;
 mod xml;
@@ -100,6 +101,8 @@ pub struct SystemPrototypes<'gc> {
     pub video: Object<'gc>,
     pub xml: Object<'gc>,
     pub xml_list: Object<'gc>,
+    pub display_object: Object<'gc>,
+    pub shape: Object<'gc>,
 }
 
 impl<'gc> SystemPrototypes<'gc> {
@@ -136,6 +139,8 @@ impl<'gc> SystemPrototypes<'gc> {
             video: empty,
             xml: empty,
             xml_list: empty,
+            display_object: empty,
+            shape: empty,
         }
     }
 }
@@ -287,6 +292,15 @@ fn xml_deriver<'gc>(
     scope: Option<GcCell<'gc, Scope<'gc>>>,
 ) -> Result<Object<'gc>, Error> {
     XmlObject::derive(base_proto, activation.context.gc_context, class, scope)
+}
+
+fn bytearray_deriver<'gc>(
+    base_proto: Object<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    class: GcCell<'gc, Class<'gc>>,
+    scope: Option<GcCell<'gc, Scope<'gc>>>,
+) -> Result<Object<'gc>, Error> {
+    ByteArrayObject::derive(base_proto, activation.context.gc_context, class, scope)
 }
 
 fn stage_deriver<'gc>(
@@ -457,6 +471,13 @@ pub fn load_player_globals<'gc>(
         domain,
         script,
     )?;
+    class(
+        activation,
+        regexp::create_class(mc),
+        regexp::regexp_deriver,
+        domain,
+        script,
+    )?;
 
     activation
         .context
@@ -500,6 +521,13 @@ pub fn load_player_globals<'gc>(
         domain,
         script,
     )?;
+    class(
+        activation,
+        flash::system::system::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
 
     // package `flash.events`
     activation
@@ -529,12 +557,47 @@ pub fn load_player_globals<'gc>(
         domain,
         script,
     )?;
+    // package `flash.utils`
+    class(
+        activation,
+        flash::utils::bytearray::create_class(mc),
+        bytearray_deriver,
+        domain,
+        script,
+    )?;
+
+    class(
+        activation,
+        flash::utils::endian::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
 
     // package `flash.display`
-    class(
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .display_object = class(
         activation,
         flash::display::displayobject::create_class(mc),
         stage_deriver,
+        domain,
+        script,
+    )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .shape = class(
+        activation,
+        flash::display::shape::create_class(mc),
+        implicit_deriver,
         domain,
         script,
     )?;

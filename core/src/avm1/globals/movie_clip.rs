@@ -130,7 +130,7 @@ pub fn hit_test<'gc>(
             // The docs say the point is in "Stage coordinates", but actually they are in root coordinates.
             // root can be moved via _root._x etc., so we actually have to transform from root to world space.
             let point = movie_clip
-                .avm1_root()?
+                .avm1_root(&activation.context)?
                 .local_to_global((Twips::from_pixels(x), Twips::from_pixels(y)));
             let ret = if shape {
                 movie_clip.hit_test_shape(&mut activation.context, point)
@@ -146,10 +146,7 @@ pub fn hit_test<'gc>(
             false,
         )?;
         if let Some(other) = other {
-            return Ok(other
-                .world_bounds()
-                .intersects(&movie_clip.world_bounds())
-                .into());
+            return Ok(movie_clip.hit_test_object(other).into());
         }
     }
 
@@ -176,6 +173,7 @@ pub fn create_proto<'gc>(
         "getBounds" => get_bounds,
         "getBytesLoaded" => get_bytes_loaded,
         "getBytesTotal" => get_bytes_total,
+        "getInstanceAtDepth" => get_instance_at_depth,
         "getNextHighestDepth" => get_next_highest_depth,
         "getRect" => get_rect,
         "getURL" => get_url,
@@ -556,8 +554,8 @@ fn attach_movie<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let (export_name, new_instance_name, depth) = match &args[0..3] {
-        [export_name, new_instance_name, depth] => (
+    let (export_name, new_instance_name, depth) = match &args.get(0..3) {
+        Some([export_name, new_instance_name, depth]) => (
             export_name.coerce_to_string(activation)?,
             new_instance_name.coerce_to_string(activation)?,
             depth
@@ -612,8 +610,8 @@ fn create_empty_movie_clip<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let (new_instance_name, depth) = match &args[0..2] {
-        [new_instance_name, depth] => (
+    let (new_instance_name, depth) = match &args.get(0..2) {
+        Some([new_instance_name, depth]) => (
             new_instance_name.coerce_to_string(activation)?,
             depth
                 .coerce_to_i32(activation)?
@@ -724,8 +722,8 @@ pub fn duplicate_movie_clip_with_bias<'gc>(
     args: &[Value<'gc>],
     depth_bias: i32,
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let (new_instance_name, depth) = match &args[0..2] {
-        [new_instance_name, depth] => (
+    let (new_instance_name, depth) = match &args.get(0..2) {
+        Some([new_instance_name, depth]) => (
             new_instance_name.coerce_to_string(activation)?,
             depth.coerce_to_i32(activation)?.wrapping_add(depth_bias),
         ),
@@ -816,6 +814,41 @@ fn get_bytes_total<'gc>(
         .movie()
         .map(|mv| (mv.header().uncompressed_length).into())
         .unwrap_or(Value::Undefined))
+}
+
+fn get_instance_at_depth<'gc>(
+    movie_clip: MovieClip<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    if activation.current_swf_version() >= 7 {
+        let depth = if let Some(depth) = args.get(0) {
+            depth
+                .coerce_to_i32(activation)?
+                .wrapping_add(AVM_DEPTH_BIAS)
+        } else {
+            avm_error!(
+                activation,
+                "MovieClip.get_instance_at_depth: Too few parameters"
+            );
+            return Ok(Value::Undefined);
+        };
+        match movie_clip.child_by_depth(depth) {
+            Some(child) => {
+                // If the child doesn't have a corresponding AVM object, return mc itself.
+                // NOTE: this behavior was guessed from observing behavior for Text and Graphic;
+                // I didn't test other variants like Bitmap, MorphSpahe, Video
+                // or objects that weren't fully initialized yet.
+                match child.object() {
+                    Value::Undefined => Ok(movie_clip.object()),
+                    obj => Ok(obj),
+                }
+            }
+            None => Ok(Value::Undefined),
+        }
+    } else {
+        Ok(Value::Undefined)
+    }
 }
 
 fn get_next_highest_depth<'gc>(
