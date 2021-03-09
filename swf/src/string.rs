@@ -106,9 +106,9 @@ impl SwfStr {
     ///
     /// ```rust
     /// use swf::SwfStr;
-    /// use encoding_rs::WINDOWS_1252;
+    /// use encoding_rs::SHIFT_JIS;
     ///
-    /// let s = SwfStr::from_str_with_encoding("Hello, World!", WINDOWS_1252);
+    /// let s = SwfStr::from_str_with_encoding("Hello, World!", SHIFT_JIS);
     /// assert!(s.is_some());
     /// ```
     pub fn from_str_with_encoding<'a>(
@@ -132,17 +132,17 @@ impl SwfStr {
     ///
     /// ```rust
     /// use swf::SwfStr;
-    /// use encoding_rs::{UTF_8, WINDOWS_1252};
+    /// use encoding_rs::{UTF_8, SHIFT_JIS};
     ///
     /// assert_eq!(SwfStr::encoding_for_version(9), UTF_8);
-    /// assert_eq!(SwfStr::encoding_for_version(3), WINDOWS_1252);
+    /// assert_eq!(SwfStr::encoding_for_version(3), SHIFT_JIS);
     /// ```
     #[inline]
     pub fn encoding_for_version(swf_version: u8) -> &'static Encoding {
         if swf_version >= 6 {
             UTF_8
         } else {
-            WINDOWS_1252
+            SHIFT_JIS
         }
     }
 
@@ -157,7 +157,7 @@ impl SwfStr {
     /// assert_eq!(s.as_bytes(), [0xF0, 0x9F, 0x92, 0x96]);
     /// ```
     #[inline]
-    pub fn as_bytes(&self) -> &[u8] {
+    pub const fn as_bytes(&self) -> &[u8] {
         &self.string
     }
 
@@ -174,7 +174,7 @@ impl SwfStr {
     /// let s = SwfStr::from_utf8_str("💖");
     /// assert!(!s.is_empty());
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.string.is_empty()
     }
 
@@ -195,7 +195,7 @@ impl SwfStr {
     /// assert_eq!(s.len(), 4);
     /// ```
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.string.len()
     }
 

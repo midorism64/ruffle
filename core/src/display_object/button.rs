@@ -1,7 +1,9 @@
 use crate::avm1::{Object, StageObject, Value};
 use crate::backend::ui::MouseCursor;
 use crate::context::{ActionType, RenderContext, UpdateContext};
-use crate::display_object::container::ChildContainer;
+use crate::display_object::container::{
+    dispatch_added_event, dispatch_removed_event, ChildContainer,
+};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult};
 use crate::prelude::*;
@@ -198,7 +200,11 @@ impl<'gc> Button<'gc> {
             // Initialize new child.
             child.post_instantiation(context, child, None, Instantiator::Movie, false);
             child.run_frame(context);
-            self.replace_at_depth(context, child, depth.into());
+            let removed_child = self.replace_at_depth(context, child, depth.into());
+            dispatch_added_event(self.into(), child, false, context);
+            if let Some(removed_child) = removed_child {
+                dispatch_removed_event(removed_child, context);
+            }
         }
     }
 
@@ -501,8 +507,8 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
         true
     }
 
-    fn on_focus_changed(&self, context: MutationContext<'gc, '_>, focused: bool) {
-        self.0.write(context).has_focus = focused;
+    fn on_focus_changed(&self, gc_context: MutationContext<'gc, '_>, focused: bool) {
+        self.0.write(gc_context).has_focus = focused;
     }
 
     fn unload(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
@@ -510,6 +516,11 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
         if had_focus {
             let tracker = context.focus_tracker;
             tracker.set(None, context);
+        }
+        if let Some(node) = self.maskee() {
+            node.set_masker(context.gc_context, None, true);
+        } else if let Some(node) = self.masker() {
+            node.set_maskee(context.gc_context, None, true);
         }
         self.set_removed(context.gc_context, true);
     }

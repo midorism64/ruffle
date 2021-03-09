@@ -5,12 +5,10 @@
 export const ruffleShadowTemplate = document.createElement("template");
 ruffleShadowTemplate.innerHTML = `
     <style>
-        :root {
+        :host {
             --ruffle-blue: #37528c;
             --ruffle-orange: #ffad33;
-        }
 
-        :host {
             display: inline-block;
             position: relative;
             /* Default width/height; this will get overridden by user styles/attributes. */
@@ -80,8 +78,11 @@ ruffleShadowTemplate.innerHTML = `
             font-size: 20px;
             text-align: center;
             /* Inverted colors from play button! */
-            background: linear-gradient(180deg, rgba(253,58,64,1) 0%, rgba(253,161,56,1) 100%);
+            background: linear-gradient(180deg, #fd3a40 0%, #fda138 100%);
             color: white;
+            display: flex;
+            flex-flow: column;
+            justify-content: space-around;
         }
 
         #panic a {
@@ -89,46 +90,27 @@ ruffleShadowTemplate.innerHTML = `
             font-weight: bold;
         }
 
-        #panic > div {
-            position: absolute;
-        }
-
         #panic-title {
-            width: inherit;
-            top: 30px;
-            font-size: 42px;
+            font-size: xxx-large;
             font-weight: bold;
         }
 
-        #panic-body {
-            top: 100px;
-            bottom: 80px;
-            left: 50px;
-            right: 50px;
+        #panic-body.details {
+            flex: 0.9;
+            margin: 0 10px;
         }
 
         #panic-body textarea {
             width: 100%;
             height: 100%;
-        }
-
-        #panic-footer {
-            bottom: 30px;
-            width: inherit;
+            resize: none;
         }
 
         #panic ul {
-            margin-top: 35px;
             padding: 0;
-            width: inherit;
             display: flex;
             list-style-type: none;
-            justify-content: center;
-            align-items: center;
-        }
-
-        #panic li {
-            padding: 10px 50px;
+            justify-content: space-evenly;
         }
 
         #message_overlay {
@@ -175,7 +157,7 @@ ruffleShadowTemplate.innerHTML = `
         }
 
         #message_overlay a:hover, #message_overlay button:hover {
-            background: rgba(255, 255, 255, 0.3);
+            background: #ffffff4c;
         }
 
         #continue-btn {
@@ -190,7 +172,7 @@ ruffleShadowTemplate.innerHTML = `
         }
 
         #continue-btn:hover {
-            background: rgba(255, 255, 255, 0.3);
+            background: #ffffff4c;
         }
 
         #context-menu {

@@ -1,8 +1,7 @@
 /* eslint-env node */
 
 const path = require("path");
-const { CleanWebpackPlugin } = require("clean-webpack-plugin");
-const CopyWebpackPlugin = require("copy-webpack-plugin");
+const CopyPlugin = require("copy-webpack-plugin");
 
 module.exports = (env, argv) => {
     let mode = "production";
@@ -20,6 +19,7 @@ module.exports = (env, argv) => {
             filename: "ruffle.js",
             publicPath: "",
             chunkFilename: "core.ruffle.[contenthash].js",
+            clean: true,
         },
         module: {
             rules: [
@@ -31,8 +31,7 @@ module.exports = (env, argv) => {
         },
         devtool: "source-map",
         plugins: [
-            new CleanWebpackPlugin(),
-            new CopyWebpackPlugin({
+            new CopyPlugin({
                 patterns: [{ from: "LICENSE*" }, { from: "README.md" }],
             }),
         ],

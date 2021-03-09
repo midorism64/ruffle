@@ -163,6 +163,7 @@ swf_tests! {
     (lessthan2_swf7, "avm1/lessthan2_swf7", 1),
     (logical_ops_swf4, "avm1/logical_ops_swf4", 1),
     (logical_ops_swf8, "avm1/logical_ops_swf8", 1),
+    (movieclip_get_instance_at_depth, "avm1/movieclip_get_instance_at_depth", 1),
     (movieclip_depth_methods, "avm1/movieclip_depth_methods", 3),
     (get_variable_in_scope, "avm1/get_variable_in_scope", 1),
     (movieclip_init_object, "avm1/movieclip_init_object", 1),
@@ -263,6 +264,7 @@ swf_tests! {
     (issue_2166, "avm1/issue_2166", 1),
     (issue_2870, "avm1/issue_2870", 10),
     (issue_3169, "avm1/issue_3169", 1),
+    (issue_3446, "avm1/issue_3446", 1),
     (function_as_function, "avm1/function_as_function", 1),
     (infinite_recursion_function, "avm1/infinite_recursion_function", 1),
     (infinite_recursion_function_in_setter, "avm1/infinite_recursion_function_in_setter", 1),
@@ -415,6 +417,7 @@ swf_tests! {
     (as3_subtract, "avm2/subtract", 1),
     (as3_urshift, "avm2/urshift", 1),
     (as3_in, "avm2/in", 1),
+    (as3_bytearray, "avm2/bytearray", 1),
     (as3_array_constr, "avm2/array_constr", 1),
     (as3_array_access, "avm2/array_access", 1),
     (as3_array_storage, "avm2/array_storage", 1),
@@ -522,6 +525,13 @@ swf_tests! {
     (as3_string_char_code_at, "avm2/string_char_code_at", 1),
     (as3_typeof, "avm2/typeof", 1),
     (use_hand_cursor, "avm1/use_hand_cursor", 1),
+    (as3_movieclip_displayevents, "avm2/movieclip_displayevents", 9),
+    (as3_movieclip_displayevents_timeline, "avm2/movieclip_displayevents_timeline", 5),
+    (as3_movieclip_displayevents_looping, "avm2/movieclip_displayevents_looping", 5),
+    (as3_movieclip_displayevents_dblhandler, "avm2/movieclip_displayevents_dblhandler", 4),
+    (as3_regexp_constr, "avm2/regexp_constr", 1),
+    (as3_regexp_test, "avm2/regexp_test", 1),
+    (as3_regexp_exec, "avm2/regexp_exec", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
