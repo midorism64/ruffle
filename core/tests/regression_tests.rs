@@ -46,8 +46,6 @@ macro_rules! swf_tests {
                 concat!("tests/swfs/", $path, "/test.swf"),
                 $num_frames,
                 concat!("tests/swfs/", $path, "/output.txt"),
-                |_| Ok(()),
-                |_| Ok(()),
             )
         }
         )*
@@ -67,9 +65,6 @@ macro_rules! swf_tests_approx {
                 $num_frames,
                 concat!("tests/swfs/", $path, "/output.txt"),
                 |actual, expected| assert_relative_eq!(actual, expected $(, $opt = $val)*),
-                //$relative_epsilon,
-                |_| Ok(()),
-                |_| Ok(()),
             )
         }
         )*
@@ -86,6 +81,9 @@ swf_tests! {
     (as_broadcaster, "avm1/as_broadcaster", 1),
     (as_broadcaster_initialize, "avm1/as_broadcaster_initialize", 1),
     (attach_movie, "avm1/attach_movie", 1),
+    (as2_bitor, "avm1/bitor", 1),
+    (as2_bitand, "avm1/bitand", 1),
+    (as2_bitxor, "avm1/bitxor", 1),
     (function_base_clip, "avm1/function_base_clip", 2),
     (call, "avm1/call", 2),
     (color, "avm1/color", 1),
@@ -185,6 +183,7 @@ swf_tests! {
     (strictequals_swf6, "avm1/strictequals_swf6", 1),
     (string_methods, "avm1/string_methods", 1),
     (string_ops_swf6, "avm1/string_ops_swf6", 1),
+    (substr_negative, "avm1/substr_negative", 1),
     (path_string, "avm1/path_string", 1),
     (global_is_bare, "avm1/global_is_bare", 1),
     (primitive_type_globals, "avm1/primitive_type_globals", 1),
@@ -399,8 +398,10 @@ swf_tests! {
     (target_path, "avm1/target_path", 1),
     (remove_movie_clip, "avm1/remove_movie_clip", 2),
     (as3_add, "avm2/add", 1),
+    (as3_bitor, "avm2/bitor", 1),
     (as3_bitand, "avm2/bitand", 1),
     (as3_bitnot, "avm2/bitnot", 1),
+    (as3_bitxor, "avm2/bitxor", 1),
     (as3_declocal, "avm2/declocal", 1),
     (as3_declocal_i, "avm2/declocal_i", 1),
     (as3_decrement, "avm2/decrement", 1),
@@ -532,6 +533,14 @@ swf_tests! {
     (as3_regexp_constr, "avm2/regexp_constr", 1),
     (as3_regexp_test, "avm2/regexp_test", 1),
     (as3_regexp_exec, "avm2/regexp_exec", 1),
+    (as3_point, "avm2/point", 1),
+    (as3_edittext_default_format, "avm2/edittext_default_format", 1),
+    (as3_edittext_html_entity, "avm2/edittext_html_entity", 1),
+    #[ignore] (as3_edittext_html_roundtrip, "avm2/edittext_html_roundtrip", 1),
+    (as3_edittext_newline_stripping, "avm2/edittext_newline_stripping", 1),
+    (as3_shape_drawrect, "avm2/shape_drawrect", 1),
+    (as3_movieclip_drawrect, "avm2/movieclip_drawrect", 1),
+    (as3_get_timer, "avm2/get_timer", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -556,12 +565,21 @@ swf_tests_approx! {
     (as3_displayobject_height, "avm2/displayobject_height", 7, epsilon = 0.06), // TODO: height/width appears to be off by 1 twip sometimes
     (as3_displayobject_width, "avm2/displayobject_width", 7, epsilon = 0.06),
     (as3_displayobject_rotation, "avm2/displayobject_rotation", 1, epsilon = 0.0000000001),
+    (as3_edittext_align, "avm2/edittext_align", 1, epsilon = 3.0),
+    (as3_edittext_autosize, "avm2/edittext_autosize", 1, epsilon = 5.0), // TODO AS3 has _width higher by 5.0, probably padding logic mistake
+    (as3_edittext_bullet, "avm2/edittext_bullet", 1, epsilon = 3.0),
+    (as3_edittext_letter_spacing, "avm2/edittext_letter_spacing", 1, epsilon = 15.0), // TODO: Discrepancy in wrapping in letterSpacing = 0.1 test.
+    (as3_edittext_margins, "avm2/edittext_margins", 1, epsilon = 5.0), // TODO: Discrepancy in wrapping.
+    (as3_edittext_tab_stops, "avm2/edittext_tab_stops", 1, epsilon = 5.0),
+    (as3_edittext_underline, "avm2/edittext_underline", 1, epsilon = 4.0),
+    (as3_edittext_leading, "avm2/edittext_leading", 1, epsilon = 0.3),
+    (as3_edittext_font_size, "avm2/edittext_font_size", 1, epsilon = 0.1),
 }
 
 #[test]
 fn external_interface_avm1() -> Result<(), Error> {
     set_logger();
-    test_swf(
+    test_swf_with_hooks(
         "tests/swfs/avm1/external_interface/test.swf",
         1,
         "tests/swfs/avm1/external_interface/output.txt",
@@ -621,7 +639,7 @@ fn shared_object_avm1() -> Result<(), Error> {
         Box::new(MemoryStorageBackend::default());
 
     // Initial run; no shared object data.
-    test_swf(
+    test_swf_with_hooks(
         "tests/swfs/avm1/shared_object/test.swf",
         1,
         "tests/swfs/avm1/shared_object/output1.txt",
@@ -635,7 +653,7 @@ fn shared_object_avm1() -> Result<(), Error> {
     )?;
 
     // Re-run the SWF, verifying that the shared object persists.
-    test_swf(
+    test_swf_with_hooks(
         "tests/swfs/avm1/shared_object/test.swf",
         1,
         "tests/swfs/avm1/shared_object/output2.txt",
@@ -654,7 +672,7 @@ fn shared_object_avm1() -> Result<(), Error> {
 #[test]
 fn timeout_avm1() -> Result<(), Error> {
     set_logger();
-    test_swf(
+    test_swf_with_hooks(
         "tests/swfs/avm1/timeout/test.swf",
         1,
         "tests/swfs/avm1/timeout/output.txt",
@@ -699,7 +717,19 @@ macro_rules! assert_eq {
 
 /// Loads an SWF and runs it through the Ruffle core for a number of frames.
 /// Tests that the trace output matches the given expected output.
-fn test_swf(
+fn test_swf(swf_path: &str, num_frames: u32, expected_output_path: &str) -> Result<(), Error> {
+    test_swf_with_hooks(
+        swf_path,
+        num_frames,
+        expected_output_path,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+}
+
+/// Loads an SWF and runs it through the Ruffle core for a number of frames.
+/// Tests that the trace output matches the given expected output.
+fn test_swf_with_hooks(
     swf_path: &str,
     num_frames: u32,
     expected_output_path: &str,
@@ -730,10 +760,8 @@ fn test_swf_approx(
     num_frames: u32,
     expected_output_path: &str,
     approx_assert_fn: impl Fn(f64, f64),
-    before_start: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
-    before_end: impl FnOnce(Arc<Mutex<Player>>) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let trace_log = run_swf(swf_path, num_frames, before_start, before_end)?;
+    let trace_log = run_swf(swf_path, num_frames, |_| Ok(()), |_| Ok(()))?;
     let mut expected_data = std::fs::read_to_string(expected_output_path)?;
 
     // Strip a trailing newline if it has one.

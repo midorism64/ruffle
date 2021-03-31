@@ -103,6 +103,10 @@ pub struct SystemPrototypes<'gc> {
     pub xml_list: Object<'gc>,
     pub display_object: Object<'gc>,
     pub shape: Object<'gc>,
+    pub point: Object<'gc>,
+    pub textfield: Object<'gc>,
+    pub textformat: Object<'gc>,
+    pub graphics: Object<'gc>,
 }
 
 impl<'gc> SystemPrototypes<'gc> {
@@ -141,6 +145,10 @@ impl<'gc> SystemPrototypes<'gc> {
             xml_list: empty,
             display_object: empty,
             shape: empty,
+            point: empty,
+            textfield: empty,
+            textformat: empty,
+            graphics: empty,
         }
     }
 }
@@ -574,6 +582,16 @@ pub fn load_player_globals<'gc>(
         script,
     )?;
 
+    function(
+        mc,
+        "flash.utils",
+        "getTimer",
+        flash::utils::get_timer,
+        fn_proto,
+        domain,
+        script,
+    )?;
+
     // package `flash.display`
     activation
         .context
@@ -661,6 +679,55 @@ pub fn load_player_globals<'gc>(
         domain,
         script,
     )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .graphics = class(
+        activation,
+        flash::display::graphics::create_class(mc),
+        stage_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::jointstyle::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::linescalemode::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::capsstyle::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+
+    // package `flash.geom`
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .point = class(
+        activation,
+        flash::geom::point::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
 
     // package `flash.media`
     activation
@@ -672,6 +739,55 @@ pub fn load_player_globals<'gc>(
         .video = class(
         activation,
         flash::media::video::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+
+    // package `flash.text`
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .textfield = class(
+        activation,
+        flash::text::textfield::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .textformat = class(
+        activation,
+        flash::text::textformat::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::text::textfieldautosize::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::text::textformatalign::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::text::textfieldtype::create_class(mc),
         implicit_deriver,
         domain,
         script,
