@@ -1,11 +1,13 @@
-use ruffle_core::backend::render::swf;
+use bytemuck::{Pod, Zeroable};
 use ruffle_core::backend::render::{
-    srgb_to_linear, Bitmap, BitmapFormat, BitmapHandle, BitmapInfo, Color, MovieLibrary,
-    RenderBackend, ShapeHandle, Transform,
+    Bitmap, BitmapFormat, BitmapHandle, BitmapInfo, Color, MovieLibrary, RenderBackend,
+    ShapeHandle, Transform,
 };
 use ruffle_core::shape_utils::DistilledShape;
-use ruffle_core::swf::Matrix;
-use ruffle_render_common_tess::{GradientSpread, GradientType, ShapeTessellator, Vertex};
+use ruffle_core::swf;
+use ruffle_render_common_tess::{
+    Gradient as TessGradient, GradientType, ShapeTessellator, Vertex as TessVertex,
+};
 use ruffle_web_common::JsResult;
 use std::collections::HashMap;
 use wasm_bindgen::{JsCast, JsValue};
@@ -30,6 +32,25 @@ enum MaskState {
     DrawMaskStencil,
     DrawMaskedContent,
     ClearMaskStencil,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    color: u32,
+}
+
+impl From<TessVertex> for Vertex {
+    fn from(vertex: TessVertex) -> Self {
+        Self {
+            position: [vertex.x, vertex.y],
+            color: ((vertex.color.a as u32) << 24)
+                | ((vertex.color.b as u32) << 16)
+                | ((vertex.color.g as u32) << 8)
+                | (vertex.color.r as u32),
+        }
+    }
 }
 
 pub struct WebGlRenderBackend {
@@ -236,49 +257,37 @@ impl WebGlRenderBackend {
 
         let vertex_buffer = self.gl.create_buffer().unwrap();
         self.gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&vertex_buffer));
+        self.gl.buffer_data_with_u8_array(
+            Gl::ARRAY_BUFFER,
+            bytemuck::cast_slice(&[
+                Vertex {
+                    position: [0.0, 0.0],
+                    color: 0xffff_ffff,
+                },
+                Vertex {
+                    position: [1.0, 0.0],
+                    color: 0xffff_ffff,
+                },
+                Vertex {
+                    position: [1.0, 1.0],
+                    color: 0xffff_ffff,
+                },
+                Vertex {
+                    position: [0.0, 1.0],
+                    color: 0xffff_ffff,
+                },
+            ]),
+            Gl::STATIC_DRAW,
+        );
 
-        let verts = [
-            Vertex {
-                position: [0.0, 0.0],
-                color: 0xffff_ffff,
-            },
-            Vertex {
-                position: [1.0, 0.0],
-                color: 0xffff_ffff,
-            },
-            Vertex {
-                position: [1.0, 1.0],
-                color: 0xffff_ffff,
-            },
-            Vertex {
-                position: [0.0, 1.0],
-                color: 0xffff_ffff,
-            },
-        ];
-        let (vertex_buffer, index_buffer) = unsafe {
-            let verts_bytes = std::slice::from_raw_parts(
-                verts.as_ptr() as *const u8,
-                std::mem::size_of_val(&verts),
-            );
-            self.gl
-                .buffer_data_with_u8_array(Gl::ARRAY_BUFFER, verts_bytes, Gl::STATIC_DRAW);
-
-            let index_buffer = self.gl.create_buffer().unwrap();
-            self.gl
-                .bind_buffer(Gl::ELEMENT_ARRAY_BUFFER, Some(&index_buffer));
-            let indices = [0u32, 1, 2, 0, 2, 3];
-            let indices_bytes = std::slice::from_raw_parts(
-                indices.as_ptr() as *const u8,
-                std::mem::size_of::<u32>() * indices.len(),
-            );
-            self.gl.buffer_data_with_u8_array(
-                Gl::ELEMENT_ARRAY_BUFFER,
-                indices_bytes,
-                Gl::STATIC_DRAW,
-            );
-
-            (vertex_buffer, index_buffer)
-        };
+        let index_buffer = self.gl.create_buffer().unwrap();
+        self.gl
+            .bind_buffer(Gl::ELEMENT_ARRAY_BUFFER, Some(&index_buffer));
+        self.gl.buffer_data_with_u8_array(
+            Gl::ELEMENT_ARRAY_BUFFER,
+            bytemuck::cast_slice(&[0u32, 1, 2, 0, 2, 3]),
+            Gl::STATIC_DRAW,
+        );
 
         if program.vertex_position_location != 0xffff_ffff {
             self.gl.vertex_attrib_pointer_with_i32(
@@ -491,100 +500,26 @@ impl WebGlRenderBackend {
             let vertex_buffer = self.gl.create_buffer().unwrap();
             self.gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&vertex_buffer));
 
-            let (vertex_buffer, index_buffer) = unsafe {
-                let verts_bytes = std::slice::from_raw_parts(
-                    draw.vertices.as_ptr() as *const u8,
-                    draw.vertices.len() * std::mem::size_of::<Vertex>(),
-                );
-                self.gl
-                    .buffer_data_with_u8_array(Gl::ARRAY_BUFFER, verts_bytes, Gl::STATIC_DRAW);
+            let vertices: Vec<_> = draw.vertices.into_iter().map(Vertex::from).collect();
+            self.gl.buffer_data_with_u8_array(
+                Gl::ARRAY_BUFFER,
+                bytemuck::cast_slice(&vertices),
+                Gl::STATIC_DRAW,
+            );
 
-                let index_buffer = self.gl.create_buffer().unwrap();
-                self.gl
-                    .bind_buffer(Gl::ELEMENT_ARRAY_BUFFER, Some(&index_buffer));
-                let indices_bytes = std::slice::from_raw_parts(
-                    draw.indices.as_ptr() as *const u8,
-                    draw.indices.len() * std::mem::size_of::<u32>(),
-                );
-                self.gl.buffer_data_with_u8_array(
-                    Gl::ELEMENT_ARRAY_BUFFER,
-                    indices_bytes,
-                    Gl::STATIC_DRAW,
-                );
-                (vertex_buffer, index_buffer)
-            };
+            let index_buffer = self.gl.create_buffer().unwrap();
+            self.gl
+                .bind_buffer(Gl::ELEMENT_ARRAY_BUFFER, Some(&index_buffer));
+            self.gl.buffer_data_with_u8_array(
+                Gl::ELEMENT_ARRAY_BUFFER,
+                bytemuck::cast_slice(&draw.indices),
+                Gl::STATIC_DRAW,
+            );
 
-            let (program, out_draw) = match draw.draw_type {
-                TessDrawType::Color => (
-                    &self.color_program,
-                    Draw {
-                        draw_type: DrawType::Color,
-                        vao,
-                        vertex_buffer,
-                        index_buffer,
-                        num_indices,
-                    },
-                ),
-                TessDrawType::Gradient(gradient) => {
-                    let mut ratios = [0.0; MAX_GRADIENT_COLORS];
-                    let mut colors = [[0.0; 4]; MAX_GRADIENT_COLORS];
-                    let num_colors = (gradient.num_colors as usize).min(MAX_GRADIENT_COLORS);
-                    ratios[..num_colors].copy_from_slice(&gradient.ratios[..num_colors]);
-                    colors[..num_colors].copy_from_slice(&gradient.colors[..num_colors]);
-                    // Convert to linear color space if this is a linear-interpolated gradient.
-                    if gradient.interpolation == swf::GradientInterpolation::LinearRgb {
-                        for color in &mut colors[..num_colors] {
-                            *color = srgb_to_linear(*color);
-                        }
-                    }
-                    for i in num_colors..MAX_GRADIENT_COLORS {
-                        ratios[i] = ratios[i - 1];
-                        colors[i] = colors[i - 1];
-                    }
-                    let out_gradient = Gradient {
-                        matrix: gradient.matrix,
-                        gradient_type: match gradient.gradient_type {
-                            GradientType::Linear => 0,
-                            GradientType::Radial => 1,
-                            GradientType::Focal => 2,
-                        },
-                        ratios,
-                        colors,
-                        num_colors: gradient.num_colors,
-                        repeat_mode: match gradient.repeat_mode {
-                            GradientSpread::Pad => 0,
-                            GradientSpread::Repeat => 1,
-                            GradientSpread::Reflect => 2,
-                        },
-                        focal_point: gradient.focal_point,
-                        interpolation: gradient.interpolation,
-                    };
-                    (
-                        &self.gradient_program,
-                        Draw {
-                            draw_type: DrawType::Gradient(Box::new(out_gradient)),
-                            vao,
-                            vertex_buffer,
-                            index_buffer,
-                            num_indices,
-                        },
-                    )
-                }
-                TessDrawType::Bitmap(bitmap) => (
-                    &self.bitmap_program,
-                    Draw {
-                        draw_type: DrawType::Bitmap(BitmapDraw {
-                            matrix: bitmap.matrix,
-                            handle: bitmap.bitmap,
-                            is_smoothed: bitmap.is_smoothed,
-                            is_repeating: bitmap.is_repeating,
-                        }),
-                        vao,
-                        vertex_buffer,
-                        index_buffer,
-                        num_indices,
-                    },
-                ),
+            let program = match draw.draw_type {
+                TessDrawType::Color => &self.color_program,
+                TessDrawType::Gradient(_) => &self.gradient_program,
+                TessDrawType::Bitmap(_) => &self.bitmap_program,
             };
 
             // Unfortunately it doesn't seem to be possible to ensure that vertex attributes will be in
@@ -617,7 +552,35 @@ impl WebGlRenderBackend {
                     .enable_vertex_attrib_array(program.vertex_color_location as u32);
             }
 
-            draws.push(out_draw);
+            draws.push(match draw.draw_type {
+                TessDrawType::Color => Draw {
+                    draw_type: DrawType::Color,
+                    vao,
+                    vertex_buffer,
+                    index_buffer,
+                    num_indices,
+                },
+                TessDrawType::Gradient(gradient) => Draw {
+                    draw_type: DrawType::Gradient(Box::new(Gradient::from(gradient))),
+                    vao,
+                    vertex_buffer,
+                    index_buffer,
+                    num_indices,
+                },
+                TessDrawType::Bitmap(bitmap) => Draw {
+                    draw_type: DrawType::Bitmap(BitmapDraw {
+                        matrix: bitmap.matrix,
+                        handle: bitmap.bitmap,
+                        is_smoothed: bitmap.is_smoothed,
+                        is_repeating: bitmap.is_repeating,
+                    }),
+                    vao,
+                    vertex_buffer,
+                    index_buffer,
+                    num_indices,
+                },
+            });
+
             self.bind_vertex_array(None);
 
             for i in program.num_vertex_attributes..NUM_VERTEX_ATTRIBUTES {
@@ -970,7 +933,7 @@ impl RenderBackend for WebGlRenderBackend {
 
             // Scale the quad to the bitmap's dimensions.
             let matrix = transform.matrix
-                * Matrix {
+                * swf::Matrix {
                     a: width,
                     d: height,
                     ..Default::default()
@@ -1152,13 +1115,11 @@ impl RenderBackend for WebGlRenderBackend {
                         gradient.gradient_type,
                     );
                     program.uniform1fv(&self.gl, ShaderUniform::GradientRatios, &gradient.ratios);
-                    let colors = unsafe {
-                        std::slice::from_raw_parts(
-                            gradient.colors[0].as_ptr(),
-                            MAX_GRADIENT_COLORS * 4,
-                        )
-                    };
-                    program.uniform4fv(&self.gl, ShaderUniform::GradientColors, &colors);
+                    program.uniform4fv(
+                        &self.gl,
+                        ShaderUniform::GradientColors,
+                        &bytemuck::cast_slice(&gradient.colors),
+                    );
                     program.uniform1i(
                         &self.gl,
                         ShaderUniform::GradientNumColors,
@@ -1209,9 +1170,9 @@ impl RenderBackend for WebGlRenderBackend {
                         .tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, filter);
                     self.gl
                         .tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, filter);
-                    // On WebGL1, you are unable to change the wrapping parameter causes non-power-of-2 textures.
+                    // On WebGL1, you are unable to change the wrapping parameter of non-power-of-2 textures.
                     let wrap = if self.gl2.is_some() && bitmap.is_repeating {
-                        Gl::MIRRORED_REPEAT as i32
+                        Gl::REPEAT as i32
                     } else {
                         Gl::CLAMP_TO_EDGE as i32
                     };
@@ -1228,7 +1189,7 @@ impl RenderBackend for WebGlRenderBackend {
         }
     }
 
-    fn draw_rect(&mut self, color: Color, matrix: &Matrix) {
+    fn draw_rect(&mut self, color: Color, matrix: &swf::Matrix) {
         let world_matrix = [
             [matrix.a, matrix.b, 0.0, 0.0],
             [matrix.c, matrix.d, 0.0, 0.0],
@@ -1399,6 +1360,39 @@ struct Gradient {
     interpolation: swf::GradientInterpolation,
 }
 
+impl From<TessGradient> for Gradient {
+    fn from(gradient: TessGradient) -> Self {
+        let mut ratios = [0.0; MAX_GRADIENT_COLORS];
+        let mut colors = [[0.0; 4]; MAX_GRADIENT_COLORS];
+        ratios[..gradient.num_colors].copy_from_slice(&gradient.ratios[..gradient.num_colors]);
+        colors[..gradient.num_colors].copy_from_slice(&gradient.colors[..gradient.num_colors]);
+
+        for i in gradient.num_colors..MAX_GRADIENT_COLORS {
+            ratios[i] = ratios[i - 1];
+            colors[i] = colors[i - 1];
+        }
+
+        Self {
+            matrix: gradient.matrix,
+            gradient_type: match gradient.gradient_type {
+                GradientType::Linear => 0,
+                GradientType::Radial => 1,
+                GradientType::Focal => 2,
+            },
+            ratios,
+            colors,
+            num_colors: gradient.num_colors as u32,
+            repeat_mode: match gradient.repeat_mode {
+                swf::GradientSpread::Pad => 0,
+                swf::GradientSpread::Repeat => 1,
+                swf::GradientSpread::Reflect => 2,
+            },
+            focal_point: gradient.focal_point,
+            interpolation: gradient.interpolation,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct BitmapDraw {
     matrix: [[f32; 3]; 3],
@@ -1550,7 +1544,7 @@ impl ShaderProgram {
         gl.uniform_matrix3fv_with_f32_array(
             self.uniforms[uniform as usize].as_ref(),
             false,
-            unsafe { std::slice::from_raw_parts(values[0].as_ptr(), 9) },
+            bytemuck::cast_slice(values),
         );
     }
 
@@ -1558,7 +1552,7 @@ impl ShaderProgram {
         gl.uniform_matrix4fv_with_f32_array(
             self.uniforms[uniform as usize].as_ref(),
             false,
-            unsafe { std::slice::from_raw_parts(values[0].as_ptr(), 16) },
+            bytemuck::cast_slice(values),
         );
     }
 }

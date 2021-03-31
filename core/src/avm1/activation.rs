@@ -224,7 +224,7 @@ pub struct Activation<'a, 'gc: 'a, 'gc_context: 'a> {
     target_clip: Option<DisplayObject<'gc>>,
 
     /// Amount of actions performed since the last timeout check
-    actions_since_timeout_check: u8,
+    actions_since_timeout_check: u16,
 
     /// Whether the base clip was removed when we started this frame.
     base_clip_unloaded: bool,
@@ -449,7 +449,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         reader: &mut Reader<'b>,
     ) -> Result<FrameControl<'gc>, Error<'gc>> {
         self.actions_since_timeout_check += 1;
-        if self.actions_since_timeout_check >= 200 {
+        if self.actions_since_timeout_check >= 2000 {
             self.actions_since_timeout_check = 0;
             if self.context.update_start.elapsed() >= self.context.max_execution_duration {
                 return Err(Error::ExecutionTimeout);
@@ -709,8 +709,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn action_bit_and(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let a = self.context.avm1.pop().coerce_to_u32(self)?;
-        let b = self.context.avm1.pop().coerce_to_u32(self)?;
+        let a = self.context.avm1.pop().coerce_to_i32(self)?;
+        let b = self.context.avm1.pop().coerce_to_i32(self)?;
         let result = a & b;
         self.context.avm1.push(result);
         Ok(FrameControl::Continue)
@@ -725,8 +725,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn action_bit_or(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let a = self.context.avm1.pop().coerce_to_u32(self)?;
-        let b = self.context.avm1.pop().coerce_to_u32(self)?;
+        let a = self.context.avm1.pop().coerce_to_i32(self)?;
+        let b = self.context.avm1.pop().coerce_to_i32(self)?;
         let result = a | b;
         self.context.avm1.push(result);
         Ok(FrameControl::Continue)
@@ -749,8 +749,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn action_bit_xor(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let a = self.context.avm1.pop().coerce_to_u32(self)?;
-        let b = self.context.avm1.pop().coerce_to_u32(self)?;
+        let a = self.context.avm1.pop().coerce_to_i32(self)?;
+        let b = self.context.avm1.pop().coerce_to_i32(self)?;
         let result = b ^ a;
         self.context.avm1.push(result);
         Ok(FrameControl::Continue)
