@@ -678,6 +678,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 Op::DebugFile { file_name } => self.op_debug_file(method, file_name),
                 Op::DebugLine { line_num } => self.op_debug_line(line_num),
                 Op::TypeOf => self.op_type_of(),
+                Op::EscXAttr => self.op_esc_xattr(),
+                Op::EscXElem => self.op_esc_elem(),
                 _ => self.unknown_op(op),
             };
 
@@ -2317,6 +2319,52 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             self.context.gc_context,
             type_name,
         )));
+
+        Ok(FrameControl::Continue)
+    }
+
+    /// Implements `Op::EscXAttr`
+    fn op_esc_xattr(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let s = self.context.avm2.pop().coerce_to_string(self)?;
+
+        // Implementation of `EscapeAttributeValue` from ECMA-357(10.2.1.2)
+        let mut r = String::new();
+        for c in s.chars() {
+            match c {
+                '"' => r += "&quot;",
+                '<' => r += "&lt;",
+                '&' => r += "&amp;",
+                '\u{000A}' => r += "&#xA;",
+                '\u{000D}' => r += "&#xD;",
+                '\u{0009}' => r += "&#x9;",
+                _ => r.push(c),
+            }
+        }
+        self.context
+            .avm2
+            .push(AvmString::new(self.context.gc_context, r));
+
+        Ok(FrameControl::Continue)
+    }
+
+    /// Implements `Op::EscXElem`
+    fn op_esc_elem(&mut self) -> Result<FrameControl<'gc>, Error> {
+        let s = self.context.avm2.pop().coerce_to_string(self)?;
+
+        // contrary to the avmplus documentation, this escapes the value on the top of the stack using EscapeElementValue from ECMA-357 *NOT* EscapeAttributeValue.
+        // Implementation of `EscapeElementValue` from ECMA-357(10.2.1.1)
+        let mut r = String::new();
+        for c in s.chars() {
+            match c {
+                '<' => r += "&lt;",
+                '>' => r += "&gt;",
+                '&' => r += "&amp;",
+                _ => r.push(c),
+            }
+        }
+        self.context
+            .avm2
+            .push(AvmString::new(self.context.gc_context, r));
 
         Ok(FrameControl::Continue)
     }
