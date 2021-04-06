@@ -172,8 +172,12 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         args: &[Value<'gc>],
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Value<'gc>, Error<'gc>> {
-        let (method, base_proto) =
-            search_prototype(Some((*self).into()), name, activation, (*self).into())?;
+        let (method, base_proto) = search_prototype(
+            Value::Object((*self).into()),
+            name,
+            activation,
+            (*self).into(),
+        )?;
 
         if let Value::Object(_) = method {
         } else {
@@ -222,38 +226,14 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     /// The proto is another object used to resolve methods across a class of
     /// multiple objects. It should also be accessible as `__proto__` from
     /// `get`.
-    fn proto(&self) -> Option<Object<'gc>> {
-        match self.proto_value() {
-            Value::Object(o) => Some(o),
-            _ => None,
-        }
-    }
-
-    fn proto_value(&self) -> Value<'gc> {
-        self.proto().map_or(Value::Undefined, Value::Object)
-    }
+    fn proto(&self) -> Value<'gc>;
 
     /// Sets the `__proto__` of a given object.
     ///
     /// The proto is another object used to resolve methods across a class of
     /// multiple objects. It should also be accessible as `__proto__` in
     /// `set`.
-    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Option<Object<'gc>>) {
-        self.set_proto_value(
-            gc_context,
-            prototype.map_or(Value::Undefined, Value::Object),
-        );
-    }
-
-    fn set_proto_value(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
-        self.set_proto(
-            gc_context,
-            match prototype {
-                Value::Object(o) => Some(o),
-                _ => None,
-            },
-        );
-    }
+    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>);
 
     /// Define a value on an object.
     ///
@@ -398,7 +378,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         prototype: Object<'gc>,
     ) -> Result<bool, Error<'gc>> {
         let mut proto_stack = vec![];
-        if let Some(p) = self.proto() {
+        if let Value::Object(p) = self.proto() {
             proto_stack.push(p);
         }
 
@@ -407,7 +387,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
                 return Ok(true);
             }
 
-            if let Some(p) = this_proto.proto() {
+            if let Value::Object(p) = this_proto.proto() {
                 proto_stack.push(p);
             }
 
@@ -541,7 +521,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     fn is_prototype_of(&self, other: Object<'gc>) -> bool {
         let mut proto = other.proto();
 
-        while let Some(proto_ob) = proto {
+        while let Value::Object(proto_ob) = proto {
             if self.as_ptr() == proto_ob.as_ptr() {
                 return true;
             }
@@ -605,23 +585,23 @@ impl<'gc> Object<'gc> {
 /// The second return value can and should be used to populate the `base_proto`
 /// property necessary to make `super` work.
 pub fn search_prototype<'gc>(
-    mut proto: Option<Object<'gc>>,
+    mut proto: Value<'gc>,
     name: &str,
     activation: &mut Activation<'_, 'gc, '_>,
     this: Object<'gc>,
 ) -> Result<(Value<'gc>, Option<Object<'gc>>), Error<'gc>> {
     let mut depth = 0;
 
-    while proto.is_some() {
+    while let Value::Object(p) = proto {
         if depth == 255 {
             return Err(Error::PrototypeRecursionLimit);
         }
 
-        if proto.unwrap().has_own_property(activation, name) {
-            return Ok((proto.unwrap().get_local(name, activation, this)?, proto));
+        if p.has_own_property(activation, name) {
+            return Ok((p.get_local(name, activation, this)?, Some(p)));
         }
 
-        proto = proto.unwrap().proto();
+        proto = p.proto();
         depth += 1;
     }
 

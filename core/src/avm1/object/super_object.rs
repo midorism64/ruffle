@@ -56,7 +56,7 @@ impl<'gc> SuperObject<'gc> {
     }
 
     /// Retrieve the prototype that `super` should be pulling from.
-    fn super_proto(self) -> Option<Object<'gc>> {
+    fn super_proto(self) -> Value<'gc> {
         self.0.read().base_proto.proto()
     }
 
@@ -65,7 +65,7 @@ impl<'gc> SuperObject<'gc> {
         self,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Option<Object<'gc>>, Error<'gc>> {
-        if let Some(super_proto) = self.super_proto() {
+        if let Value::Object(super_proto) = self.super_proto() {
             Ok(Some(
                 super_proto
                     .get("__constructor__", activation)?
@@ -105,13 +105,11 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
         args: &[Value<'gc>],
     ) -> Result<Value<'gc>, Error<'gc>> {
         if let Some(constr) = self.super_constr(activation)? {
-            constr.call(
-                name,
-                activation,
-                self.0.read().child,
-                self.super_proto(),
-                args,
-            )
+            let super_proto = match self.super_proto() {
+                Value::Object(o) => Some(o),
+                _ => None,
+            };
+            constr.call(name, activation, self.0.read().child, super_proto, args)
         } else {
             Ok(Value::Undefined)
         }
@@ -124,8 +122,7 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Value<'gc>, Error<'gc>> {
         let child = self.0.read().child;
-        let super_proto = self.super_proto();
-        let (method, base_proto) = search_prototype(super_proto, name, activation, child)?;
+        let (method, base_proto) = search_prototype(self.super_proto(), name, activation, child)?;
 
         if let Value::Object(_) = method {
         } else {
@@ -150,7 +147,7 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
         activation: &mut Activation<'_, 'gc, '_>,
         this: Object<'gc>,
     ) -> Result<Object<'gc>, Error<'gc>> {
-        if let Some(proto) = self.proto() {
+        if let Value::Object(proto) = self.proto() {
             proto.create_bare_object(activation, this)
         } else {
             // TODO: What happens when you `new super` but there's no
@@ -164,12 +161,12 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
         false
     }
 
-    fn proto(&self) -> Option<Object<'gc>> {
+    fn proto(&self) -> Value<'gc> {
         self.super_proto()
     }
 
-    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Option<Object<'gc>>) {
-        if let Some(prototype) = prototype {
+    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
+        if let Value::Object(prototype) = prototype {
             self.0.write(gc_context).base_proto = prototype;
         }
     }

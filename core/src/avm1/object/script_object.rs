@@ -97,7 +97,7 @@ impl fmt::Debug for ScriptObjectData<'_> {
 impl<'gc> ScriptObject<'gc> {
     pub fn object(
         gc_context: MutationContext<'gc, '_>,
-        proto: Option<Object<'gc>>, // TODO: Change to `Value`.
+        proto: Option<Object<'gc>>,
     ) -> ScriptObject<'gc> {
         ScriptObject(GcCell::allocate(
             gc_context,
@@ -114,7 +114,7 @@ impl<'gc> ScriptObject<'gc> {
 
     pub fn array(
         gc_context: MutationContext<'gc, '_>,
-        proto: Option<Object<'gc>>, // TODO: Change to `Value`.
+        proto: Option<Object<'gc>>,
     ) -> ScriptObject<'gc> {
         let object = ScriptObject(GcCell::allocate(
             gc_context,
@@ -134,7 +134,7 @@ impl<'gc> ScriptObject<'gc> {
     /// Constructs and allocates an empty but normal object in one go.
     pub fn object_cell(
         gc_context: MutationContext<'gc, '_>,
-        proto: Option<Object<'gc>>, // TODO: Change to `Value`.
+        proto: Option<Object<'gc>>,
     ) -> Object<'gc> {
         ScriptObject(GcCell::allocate(
             gc_context,
@@ -275,8 +275,8 @@ impl<'gc> ScriptObject<'gc> {
             let mut worked = false;
 
             if is_vacant {
-                let mut proto: Option<Object<'gc>> = Some((*self).into());
-                while let Some(this_proto) = proto {
+                let mut proto: Value<'gc> = (*self).into();
+                while let Value::Object(this_proto) = proto {
                     if this_proto.has_own_virtual(activation, name) {
                         break;
                     }
@@ -284,7 +284,7 @@ impl<'gc> ScriptObject<'gc> {
                     proto = this_proto.proto();
                 }
 
-                if let Some(this_proto) = proto {
+                if let Value::Object(this_proto) = proto {
                     worked = true;
                     if let Some(rval) = this_proto.call_setter(name, value, activation) {
                         if let Some(exec) = rval.as_executable() {
@@ -381,7 +381,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         this: Object<'gc>,
     ) -> Result<Value<'gc>, Error<'gc>> {
         if name == "__proto__" {
-            return Ok(self.proto_value());
+            return Ok(self.proto());
         }
 
         let mut getter = None;
@@ -610,21 +610,22 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         }
     }
 
-    fn proto_value(&self) -> Value<'gc> {
+    fn proto(&self) -> Value<'gc> {
         self.0.read().prototype
     }
 
-    fn set_proto_value(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
+    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
         self.0.write(gc_context).prototype = prototype;
     }
 
     /// Checks if the object has a given named property.
     fn has_property(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
         self.has_own_property(activation, name)
-            || self
-                .proto()
-                .as_ref()
-                .map_or(false, |p| p.has_property(activation, name))
+            || if let Value::Object(proto) = self.proto() {
+                proto.has_property(activation, name)
+            } else {
+                false
+            }
     }
 
     /// Checks if the object has a given named property on itself (and not,
@@ -668,9 +669,11 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
 
     /// Enumerate the object.
     fn get_keys(&self, activation: &mut Activation<'_, 'gc, '_>) -> Vec<String> {
-        let proto_keys = self
-            .proto()
-            .map_or_else(Vec::new, |p| p.get_keys(activation));
+        let proto_keys = if let Value::Object(proto) = self.proto() {
+            proto.get_keys(activation)
+        } else {
+            Vec::new()
+        };
         let mut out_keys = vec![];
         let object = self.0.read();
 

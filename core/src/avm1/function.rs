@@ -709,11 +709,11 @@ impl<'gc> TObject<'gc> for FunctionObject<'gc> {
         self.base.delete(activation, name)
     }
 
-    fn proto(&self) -> Option<Object<'gc>> {
+    fn proto(&self) -> Value<'gc> {
         self.base.proto()
     }
 
-    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Option<Object<'gc>>) {
+    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
         self.base.set_proto(gc_context, prototype);
     }
 

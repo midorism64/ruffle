@@ -107,6 +107,8 @@ pub struct SystemPrototypes<'gc> {
     pub textfield: Object<'gc>,
     pub textformat: Object<'gc>,
     pub graphics: Object<'gc>,
+    pub loaderinfo: Object<'gc>,
+    pub bytearray: Object<'gc>,
 }
 
 impl<'gc> SystemPrototypes<'gc> {
@@ -149,6 +151,8 @@ impl<'gc> SystemPrototypes<'gc> {
             textfield: empty,
             textformat: empty,
             graphics: empty,
+            loaderinfo: empty,
+            bytearray: empty,
         }
     }
 }
@@ -566,7 +570,13 @@ pub fn load_player_globals<'gc>(
         script,
     )?;
     // package `flash.utils`
-    class(
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .bytearray = class(
         activation,
         flash::utils::bytearray::create_class(mc),
         bytearray_deriver,
@@ -709,6 +719,33 @@ pub fn load_player_globals<'gc>(
     class(
         activation,
         flash::display::capsstyle::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .loaderinfo = class(
+        activation,
+        flash::display::loaderinfo::create_class(mc),
+        flash::display::loaderinfo::loaderinfo_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::actionscriptversion::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::swfversion::create_class(mc),
         implicit_deriver,
         domain,
         script,

@@ -543,6 +543,9 @@ swf_tests! {
     (as3_get_timer, "avm2/get_timer", 1),
     (as3_op_escxattr, "avm2/op_escxattr", 1),
     (as3_op_escxelem, "avm2/op_escxelem", 1),
+    (as3_op_lookupswitch, "avm2/op_lookupswitch", 1),
+    (as3_loaderinfo_properties, "avm2/loaderinfo_properties", 2),
+    (as3_loaderinfo_quine, "avm2/loaderinfo_quine", 2),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -814,7 +817,7 @@ fn run_swf(
 ) -> Result<String, Error> {
     let base_path = Path::new(swf_path).parent().unwrap();
     let (mut executor, channel) = NullExecutor::new();
-    let movie = SwfMovie::from_path(swf_path)?;
+    let movie = SwfMovie::from_path(swf_path, None)?;
     let frame_time = 1000.0 / movie.header().frame_rate as f64;
     let trace_output = Rc::new(RefCell::new(Vec::new()));
 
