@@ -67,46 +67,25 @@ pub trait ReadSwfExt<'a> {
 
     #[inline]
     fn read_fixed8(&mut self) -> Result<f32> {
-        ReadSwfExt::read_i16(self).map(|n| f32::from(n) / 256f32)
+        Ok((self.read_i16()? as f32) / 256.0)
     }
 
     #[inline]
     fn read_fixed16(&mut self) -> Result<f64> {
-        ReadSwfExt::read_i32(self).map(|n| f64::from(n) / 65536f64)
+        Ok((self.read_i32()? as f64) / 65536.0)
     }
 
     #[inline]
     fn read_encoded_u32(&mut self) -> Result<u32> {
-        let mut val = 0u32;
-        for i in 0..5 {
-            let byte = ReadSwfExt::read_u8(self)?;
-            val |= u32::from(byte & 0b01111111) << (i * 7);
-            if byte & 0b10000000 == 0 {
+        let mut val: u32 = 0;
+        for i in (0..35).step_by(7) {
+            let byte = self.read_u8()? as u32;
+            val |= (byte & 0b0111_1111) << i;
+            if byte & 0b1000_0000 == 0 {
                 break;
             }
         }
         Ok(val)
-    }
-
-    #[inline]
-    fn read_encoded_i32(&mut self) -> Result<i32> {
-        let mut n: i32 = 0;
-        let mut i = 0;
-        for _ in 0..5 {
-            let byte: i32 = self.read_u8()?.into();
-            n |= (byte & 0b0111_1111) << i;
-            i += 7;
-
-            if byte & 0b1000_0000 == 0 {
-                if i < 32 {
-                    n <<= 32 - i;
-                    n >>= 32 - i;
-                }
-
-                break;
-            }
-        }
-        Ok(n)
     }
 
     #[inline]

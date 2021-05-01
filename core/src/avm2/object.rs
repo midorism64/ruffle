@@ -19,6 +19,7 @@ use gc_arena::{Collect, GcCell, MutationContext};
 use ruffle_macros::enum_trait_object;
 use std::cell::{Ref, RefMut};
 use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
 
 mod array_object;
 mod bytearray_object;
@@ -206,11 +207,49 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         receiver.init_property_local(receiver, name, value, activation)
     }
 
+    /// Determines if a local slot already exists and is occupied.
+    fn has_slot_local(self, id: u32) -> bool;
+
     /// Retrieve a slot by its index.
-    fn get_slot(self, id: u32) -> Result<Value<'gc>, Error>;
+    #[allow(unused_mut)]
+    fn get_slot(
+        mut self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        id: u32,
+    ) -> Result<Value<'gc>, Error> {
+        if !self.has_slot_local(id) {
+            let slot_trait = self
+                .get_trait_slot(id)?
+                .ok_or_else(|| format!("Slot index {} out of bounds!", id))?;
+            self.install_trait(activation, slot_trait, self.into())?;
+        }
+
+        self.get_slot_local(id)
+    }
+
+    /// Retrieve a slot by its index, ignoring uninstalled traits.
+    fn get_slot_local(self, id: u32) -> Result<Value<'gc>, Error>;
 
     /// Set a slot by its index.
+    #[allow(unused_mut)]
     fn set_slot(
+        mut self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        id: u32,
+        value: Value<'gc>,
+    ) -> Result<(), Error> {
+        if !self.has_slot_local(id) {
+            let slot_trait = self
+                .get_trait_slot(id)?
+                .ok_or_else(|| format!("Slot index {} out of bounds!", id))?;
+            self.install_trait(activation, slot_trait, self.into())?;
+        }
+
+        self.set_slot_local(id, value, activation.context.gc_context)
+    }
+
+    /// Set a slot by its index, ignoring uninstalled traits.
+    fn set_slot_local(
         self,
         id: u32,
         value: Value<'gc>,
@@ -218,7 +257,25 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     ) -> Result<(), Error>;
 
     /// Initialize a slot by its index.
+    #[allow(unused_mut)]
     fn init_slot(
+        mut self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        id: u32,
+        value: Value<'gc>,
+    ) -> Result<(), Error> {
+        if !self.has_slot_local(id) {
+            let slot_trait = self
+                .get_trait_slot(id)?
+                .ok_or_else(|| format!("Slot index {} out of bounds!", id))?;
+            self.install_trait(activation, slot_trait, self.into())?;
+        }
+
+        self.init_slot_local(id, value, activation.context.gc_context)
+    }
+
+    /// Initialize a slot by its index, ignoring uninstalled traits.
+    fn init_slot_local(
         self,
         id: u32,
         value: Value<'gc>,
@@ -230,12 +287,19 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
 
     /// Retrieves a trait entry by name.
     ///
-    /// This function returns `None` if no such trait exists, or the object
-    /// does not have traits. It returns `Err` if *any* trait in the object is
-    /// malformed in some way.
+    /// This function returns an empty `Vec` if no such trait exists, or the
+    /// object does not have traits. It returns `Err` if *any* trait in the
+    /// object's prototype chain bearing this name is malformed in some way.
     fn get_trait(self, name: &QName<'gc>) -> Result<Vec<Trait<'gc>>, Error>;
 
-    /// Populate a list of traits that this object provides.
+    /// Retrieves a trait entry by slot ID.
+    ///
+    /// This function returns `None` if no such trait exists, or the object
+    /// does not have traits. It returns `Err` if *any* trait in the object's
+    /// prototype chain bearing this name is malformed in some way.
+    fn get_trait_slot(self, id: u32) -> Result<Option<Trait<'gc>>, Error>;
+
+    /// Populate a list of traits that this object provides for a given name.
     ///
     /// This function yields traits for class constructors and prototypes, but
     /// not instances. For resolving traits for normal `TObject` methods, use
@@ -246,6 +310,14 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         name: &QName<'gc>,
         known_traits: &mut Vec<Trait<'gc>>,
     ) -> Result<(), Error>;
+
+    /// Populate a list of traits that this object provides for a given slot.
+    ///
+    /// This function yields traits for class constructors and prototypes, but
+    /// not instances. For resolving traits for normal `TObject` methods, use
+    /// `get_trait` and `has_trait` as it will tell you if the current object
+    /// has a given trait.
+    fn get_provided_trait_slot(&self, id: u32) -> Result<Option<Trait<'gc>>, Error>;
 
     /// Retrieves the scope chain of the object at time of its creation.
     ///
@@ -854,6 +926,11 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     fn as_bytearray_mut(&self, _mc: MutationContext<'gc, '_>) -> Option<RefMut<ByteArrayStorage>> {
         None
     }
+
+    fn as_bytearray_object(&self) -> Option<ByteArrayObject<'gc>> {
+        None
+    }
+
     /// Unwrap this object as mutable array storage.
     fn as_array_storage_mut(
         &self,
@@ -924,5 +1001,19 @@ pub enum ObjectPtr {}
 impl<'gc> Object<'gc> {
     pub fn ptr_eq(a: Object<'gc>, b: Object<'gc>) -> bool {
         a.as_ptr() == b.as_ptr()
+    }
+}
+
+impl<'gc> PartialEq for Object<'gc> {
+    fn eq(&self, other: &Self) -> bool {
+        Object::ptr_eq(*self, *other)
+    }
+}
+
+impl<'gc> Eq for Object<'gc> {}
+
+impl<'gc> Hash for Object<'gc> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_ptr().hash(state);
     }
 }

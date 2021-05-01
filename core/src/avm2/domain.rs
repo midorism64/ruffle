@@ -2,7 +2,7 @@
 
 use crate::avm2::activation::Activation;
 use crate::avm2::names::{Multiname, QName};
-use crate::avm2::object::TObject;
+use crate::avm2::object::{ByteArrayObject, TObject};
 use crate::avm2::script::Script;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
@@ -23,6 +23,9 @@ struct DomainData<'gc> {
 
     /// The parent domain.
     parent: Option<Domain<'gc>>,
+
+    /// The bytearray used for storing domain memory
+    pub domain_memory: ByteArrayObject<'gc>,
 }
 
 impl<'gc> Domain<'gc> {
@@ -31,22 +34,30 @@ impl<'gc> Domain<'gc> {
     /// This is intended exclusively for creating the player globals domain,
     /// hence the name.
     pub fn global_domain(mc: MutationContext<'gc, '_>) -> Domain<'gc> {
+        let domain_memory = ByteArrayObject::new(mc, None);
+        domain_memory.as_bytearray_mut(mc).unwrap().set_length(1024);
+
         Self(GcCell::allocate(
             mc,
             DomainData {
                 defs: HashMap::new(),
                 parent: None,
+                domain_memory,
             },
         ))
     }
 
     /// Create a new domain with a given parent.
     pub fn movie_domain(mc: MutationContext<'gc, '_>, parent: Domain<'gc>) -> Domain<'gc> {
+        let domain_memory = ByteArrayObject::new(mc, None);
+        domain_memory.as_bytearray_mut(mc).unwrap().set_length(1024);
+
         Self(GcCell::allocate(
             mc,
             DomainData {
                 defs: HashMap::new(),
                 parent: Some(parent),
+                domain_memory,
             },
         ))
     }
@@ -145,5 +156,17 @@ impl<'gc> Domain<'gc> {
         self.0.write(mc).defs.insert(name, script);
 
         Ok(())
+    }
+
+    pub fn domain_memory(&self) -> ByteArrayObject<'gc> {
+        self.0.read().domain_memory
+    }
+
+    pub fn set_domain_memory(
+        &self,
+        mc: MutationContext<'gc, '_>,
+        domain_memory: ByteArrayObject<'gc>,
+    ) {
+        self.0.write(mc).domain_memory = domain_memory
     }
 }

@@ -36,7 +36,6 @@ impl<'gc> Watcher<'gc> {
     pub fn call(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-
         name: &str,
         old_value: Value<'gc>,
         new_value: Value<'gc>,
@@ -474,7 +473,6 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         }
     }
 
-    #[allow(clippy::new_ret_no_self)]
     fn create_bare_object(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -838,7 +836,7 @@ mod tests {
     use crate::backend::ui::NullUiBackend;
     use crate::backend::video::NullVideoBackend;
     use crate::context::UpdateContext;
-    use crate::display_object::MovieClip;
+    use crate::display_object::{MovieClip, Stage};
     use crate::focus_tracker::FocusTracker;
     use crate::library::Library;
     use crate::loader::LoadManager;
@@ -848,7 +846,7 @@ mod tests {
     use gc_arena::rootless_arena;
     use instant::Instant;
     use rand::{rngs::SmallRng, SeedableRng};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -863,8 +861,9 @@ mod tests {
             let root: DisplayObject<'_> =
                 MovieClip::new(SwfSlice::empty(swf.clone()), gc_context).into();
             root.set_depth(gc_context, 0);
-            let mut levels = BTreeMap::new();
-            levels.insert(0, root);
+
+            let stage = Stage::empty(gc_context, 550, 400);
+            let mut frame_rate = 12.0;
 
             let object = ScriptObject::object(gc_context, Some(avm1.prototypes().object)).into();
             let globals = avm1.global_object_cell();
@@ -873,13 +872,12 @@ mod tests {
                 gc_context,
                 player_version: 32,
                 swf: &swf,
-                levels: &mut levels,
+                stage,
                 rng: &mut SmallRng::from_seed([0u8; 32]),
                 action_queue: &mut crate::context::ActionQueue::new(),
                 audio: &mut NullAudioBackend::new(),
                 audio_manager: &mut AudioManager::new(),
                 ui: &mut NullUiBackend::new(),
-                background_color: &mut None,
                 library: &mut Library::empty(gc_context),
                 navigator: &mut NullNavigatorBackend::new(),
                 renderer: &mut NullRenderer::new(),
@@ -889,7 +887,6 @@ mod tests {
                 mouse_hovered_object: None,
                 mouse_position: &(Twips::zero(), Twips::zero()),
                 drag_object: &mut None,
-                stage_size: (Twips::from_pixels(550.0), Twips::from_pixels(400.0)),
                 player: None,
                 load_manager: &mut LoadManager::new(),
                 system: &mut SystemProperties::default(),
@@ -907,19 +904,20 @@ mod tests {
                 focus_tracker: FocusTracker::new(gc_context),
                 times_get_time_called: 0,
                 time_offset: &mut 0,
+                frame_rate: &mut frame_rate,
             };
+            context.stage.replace_at_depth(&mut context, root, 0);
 
             root.post_instantiation(&mut context, root, None, Instantiator::Movie, false);
             root.set_name(context.gc_context, "");
 
-            let base_clip = *context.levels.get(&0).unwrap();
             let swf_version = context.swf.version();
             let mut activation = Activation::from_nothing(
                 context,
                 ActivationIdentifier::root("[Test]"),
                 swf_version,
                 globals,
-                base_clip,
+                root,
             );
 
             test(&mut activation, object)
@@ -991,7 +989,7 @@ mod tests {
                 Attribute::DONT_DELETE,
             );
 
-            assert_eq!(object.delete(activation, "test"), false);
+            assert!(!object.delete(activation, "test"));
             assert_eq!(object.get("test", activation).unwrap(), "initial".into());
 
             object
@@ -1000,7 +998,7 @@ mod tests {
                 .set("test", "replaced".into(), activation)
                 .unwrap();
 
-            assert_eq!(object.delete(activation, "test"), false);
+            assert!(!object.delete(activation, "test"));
             assert_eq!(object.get("test", activation).unwrap(), "replaced".into());
         })
     }
@@ -1068,11 +1066,11 @@ mod tests {
                 Attribute::DONT_DELETE,
             );
 
-            assert_eq!(object.delete(activation, "virtual"), true);
-            assert_eq!(object.delete(activation, "virtual_un"), false);
-            assert_eq!(object.delete(activation, "stored"), true);
-            assert_eq!(object.delete(activation, "stored_un"), false);
-            assert_eq!(object.delete(activation, "non_existent"), false);
+            assert!(object.delete(activation, "virtual"));
+            assert!(!object.delete(activation, "virtual_un"));
+            assert!(object.delete(activation, "stored"));
+            assert!(!object.delete(activation, "stored_un"));
+            assert!(!object.delete(activation, "non_existent"));
 
             assert_eq!(object.get("virtual", activation).unwrap(), Value::Undefined);
             assert_eq!(
@@ -1126,10 +1124,10 @@ mod tests {
 
             let keys: Vec<_> = object.get_keys(activation);
             assert_eq!(keys.len(), 2);
-            assert_eq!(keys.contains(&"stored".to_string()), true);
-            assert_eq!(keys.contains(&"stored_hidden".to_string()), false);
-            assert_eq!(keys.contains(&"virtual".to_string()), true);
-            assert_eq!(keys.contains(&"virtual_hidden".to_string()), false);
+            assert!(keys.contains(&"stored".to_string()));
+            assert!(!keys.contains(&"stored_hidden".to_string()));
+            assert!(keys.contains(&"virtual".to_string()));
+            assert!(!keys.contains(&"virtual_hidden".to_string()));
         })
     }
 }

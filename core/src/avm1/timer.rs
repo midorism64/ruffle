@@ -39,7 +39,7 @@ impl<'gc> Timers<'gc> {
 
         let version = context.swf.header().version;
         let globals = context.avm1.global_object_cell();
-        let level0 = context.levels.get(&0).copied().unwrap();
+        let level0 = context.stage.root_clip();
 
         let mut activation = Activation::from_nothing(
             context.reborrow(),
@@ -50,7 +50,7 @@ impl<'gc> Timers<'gc> {
         );
 
         // TODO: `this` is undefined for non-method timer callbacks, but our VM
-        // currently doesn't allow `this` to be a Value.
+        // currently doesn't allow `this` to be a Value (#843).
         let undefined = Value::Undefined.coerce_to_object(&mut activation);
 
         let mut tick_count = 0;
@@ -111,6 +111,8 @@ impl<'gc> Timers<'gc> {
                     base_proto,
                     &params,
                 );
+
+                crate::player::Player::run_actions(&mut activation.context);
             }
 
             let mut timer = activation.context.timers.peek_mut().unwrap();

@@ -132,7 +132,7 @@ impl WebGlRenderBackend {
 
             // Ensure that we don't exceed the max MSAA of this device.
             if let Ok(max_samples) = gl2.get_parameter(Gl2::MAX_SAMPLES) {
-                let max_samples: u32 = max_samples.as_f64().unwrap_or(0.0) as u32;
+                let max_samples = max_samples.as_f64().unwrap_or(0.0) as u32;
                 if max_samples > 0 && max_samples < msaa_sample_count {
                     log::info!("Device only supports {}xMSAA", max_samples);
                     msaa_sample_count = max_samples;
@@ -951,19 +951,8 @@ impl RenderBackend for WebGlRenderBackend {
                 ],
             ];
 
-            let mult_color = [
-                transform.color_transform.r_mult,
-                transform.color_transform.g_mult,
-                transform.color_transform.b_mult,
-                transform.color_transform.a_mult,
-            ];
-
-            let add_color = [
-                transform.color_transform.r_add,
-                transform.color_transform.g_add,
-                transform.color_transform.b_add,
-                transform.color_transform.a_add,
-            ];
+            let mult_color = transform.color_transform.mult_rgba_normalized();
+            let add_color = transform.color_transform.add_rgba_normalized();
 
             self.bind_vertex_array(Some(&draw.vao));
 
@@ -1041,19 +1030,8 @@ impl RenderBackend for WebGlRenderBackend {
             ],
         ];
 
-        let mult_color = [
-            transform.color_transform.r_mult,
-            transform.color_transform.g_mult,
-            transform.color_transform.b_mult,
-            transform.color_transform.a_mult,
-        ];
-
-        let add_color = [
-            transform.color_transform.r_add,
-            transform.color_transform.g_add,
-            transform.color_transform.b_add,
-            transform.color_transform.a_add,
-        ];
+        let mult_color = transform.color_transform.mult_rgba_normalized();
+        let add_color = transform.color_transform.add_rgba_normalized();
 
         self.set_stencil_state();
 

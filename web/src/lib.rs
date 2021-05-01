@@ -112,6 +112,9 @@ extern "C" {
 
     #[wasm_bindgen(method, getter, js_name = "isFullscreen")]
     fn is_fullscreen(this: &JavascriptPlayer) -> bool;
+
+    #[wasm_bindgen(method, js_name = "setMetadata")]
+    fn set_metadata(this: &JavascriptPlayer, metadata: JsValue);
 }
 
 struct JavascriptInterface {
@@ -156,6 +159,19 @@ impl Default for Config {
     }
 }
 
+/// Metadata about the playing SWF file to be passed back to JavaScript.
+#[derive(Serialize)]
+struct MovieMetadata {
+    width: f64,
+    height: f64,
+    #[serde(rename = "frameRate")]
+    frame_rate: f32,
+    #[serde(rename = "numFrames")]
+    num_frames: u16,
+    #[serde(rename = "swfVersion")]
+    swf_version: u8,
+}
+
 /// An opaque handle to a `RuffleInstance` inside the pool.
 ///
 /// This type is exported to JS, and is used to interact with the library.
@@ -187,16 +203,22 @@ impl Ruffle {
     ///
     /// This method should only be called once per player.
     pub fn stream_from(&mut self, movie_url: &str, parameters: &JsValue) -> Result<(), JsValue> {
+        let ruffle = self.clone();
         INSTANCES.with(|instances| {
             let instances = instances.borrow();
-            let instance = instances.get(self.0).unwrap().borrow();
+            let instance = instances.get(ruffle.0).unwrap().borrow();
             let mut parameters_to_load = PropertyMap::new();
             populate_movie_parameters(&parameters, &mut parameters_to_load);
-            instance
-                .core
-                .lock()
-                .unwrap()
-                .fetch_root_movie(movie_url, parameters_to_load);
+
+            let on_metadata = move |swf_header: &ruffle_core::swf::Header| {
+                ruffle.on_metadata(swf_header);
+            };
+
+            instance.core.lock().unwrap().fetch_root_movie(
+                movie_url,
+                parameters_to_load,
+                Box::new(on_metadata),
+            );
             Ok(())
         })
     }
@@ -213,6 +235,8 @@ impl Ruffle {
             populate_movie_parameters(&parameters, movie.parameters_mut());
             movie
         });
+
+        self.on_metadata(movie.header());
 
         INSTANCES.with(|instances| {
             let instances = instances.borrow();
@@ -246,6 +270,74 @@ impl Ruffle {
             let is_playing = instance.borrow().core.lock().unwrap().is_playing();
             is_playing
         })
+    }
+
+    pub fn get_builtin_menu_items(&mut self) -> Vec<JsValue> {
+        INSTANCES.with(|instances| {
+            let instances = instances.borrow();
+            let instance = instances.get(self.0).unwrap();
+            let builtin_menu_items = instance
+                .borrow()
+                .core
+                .lock()
+                .unwrap()
+                .get_builtin_menu_items();
+            builtin_menu_items
+                .into_iter()
+                .map(JsValue::from_str)
+                .collect()
+        })
+    }
+
+    pub fn is_playing_root_movie(&mut self) -> bool {
+        INSTANCES.with(|instances| {
+            let instances = instances.borrow();
+            let instance = instances.get(self.0).unwrap();
+            let is_playing_root_movie = instance
+                .borrow()
+                .core
+                .lock()
+                .unwrap()
+                .is_playing_root_movie();
+            is_playing_root_movie
+        })
+    }
+
+    pub fn toggle_play_root_movie(&mut self) {
+        INSTANCES.with(|instances| {
+            let instances = instances.borrow();
+            let instance = instances.get(self.0).unwrap();
+            instance
+                .borrow()
+                .core
+                .lock()
+                .unwrap()
+                .toggle_play_root_movie();
+        });
+    }
+
+    pub fn rewind_root_movie(&mut self) {
+        INSTANCES.with(|instances| {
+            let instances = instances.borrow();
+            let instance = instances.get(self.0).unwrap();
+            instance.borrow().core.lock().unwrap().rewind_root_movie();
+        });
+    }
+
+    pub fn forward_root_movie(&mut self) {
+        INSTANCES.with(|instances| {
+            let instances = instances.borrow();
+            let instance = instances.get(self.0).unwrap();
+            instance.borrow().core.lock().unwrap().forward_root_movie();
+        });
+    }
+
+    pub fn back_root_movie(&mut self) {
+        INSTANCES.with(|instances| {
+            let instances = instances.borrow();
+            let instance = instances.get(self.0).unwrap();
+            instance.borrow().core.lock().unwrap().back_root_movie();
+        });
     }
 
     pub fn destroy(&mut self) {
@@ -889,7 +981,11 @@ impl Ruffle {
                     canvas.set_width(viewport_width);
                     canvas.set_height(viewport_height);
 
-                    core_lock.set_viewport_dimensions(viewport_width, viewport_height);
+                    core_lock.set_viewport_dimensions(
+                        viewport_width,
+                        viewport_height,
+                        device_pixel_ratio,
+                    );
                     core_lock
                         .renderer_mut()
                         .set_viewport_dimensions(viewport_width, viewport_height);
@@ -915,6 +1011,26 @@ impl Ruffle {
                 }
             }
         });
+    }
+
+    fn on_metadata(&self, swf_header: &ruffle_core::swf::Header) {
+        INSTANCES.with(|instances| {
+            let instances = instances.borrow();
+            let instance = instances.get(self.0).unwrap().borrow();
+            let width = swf_header.stage_size.x_max - swf_header.stage_size.x_min;
+            let height = swf_header.stage_size.y_max - swf_header.stage_size.y_min;
+            let metadata = MovieMetadata {
+                width: width.to_pixels(),
+                height: height.to_pixels(),
+                frame_rate: swf_header.frame_rate,
+                num_frames: swf_header.num_frames,
+                swf_version: swf_header.version,
+            };
+
+            instance
+                .js_player
+                .set_metadata(JsValue::from_serde(&metadata).unwrap());
+        })
     }
 }
 

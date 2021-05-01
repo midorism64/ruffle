@@ -114,12 +114,44 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
         }
     }
 
+    fn construct_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        if self.vm_type(context) == AvmType::Avm2 {
+            let mut allocator = || {
+                let mut activation = Avm2Activation::from_nothing(context.reborrow());
+                let mut proto = activation.context.avm2.prototypes().shape;
+                let constr = proto
+                    .get_property(
+                        proto,
+                        &Avm2QName::new(Avm2Namespace::public(), "constructor"),
+                        &mut activation,
+                    )?
+                    .coerce_to_object(&mut activation)?;
+
+                let object = Avm2StageObject::for_display_object(
+                    activation.context.gc_context,
+                    (*self).into(),
+                    proto,
+                )
+                .into();
+                constr.call(Some(object), &[], &mut activation, Some(proto))?;
+
+                Ok(object)
+            };
+            let result: Result<Avm2Object<'gc>, Avm2Error> = allocator();
+
+            match result {
+                Ok(object) => self.0.write(context.gc_context).avm2_object = Some(object),
+                Err(e) => log::error!("Got {} when constructing AVM2 side of display object", e),
+            }
+        }
+    }
+
     fn run_frame(&self, _context: &mut UpdateContext) {
         // Noop
     }
 
     fn render_self(&self, context: &mut RenderContext) {
-        if !self.world_bounds().intersects(&context.view_bounds) {
+        if !self.world_bounds().intersects(&context.stage.view_bounds()) {
             // Off-screen; culled
             return;
         }
@@ -137,6 +169,7 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
         &self,
         _context: &mut UpdateContext<'_, 'gc, '_>,
         point: (Twips, Twips),
+        _options: HitTestOptions,
     ) -> bool {
         // Transform point to local coordinates and test.
         if self.world_bounds().contains(point) {
@@ -158,41 +191,11 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
     fn post_instantiation(
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
-        display_object: DisplayObject<'gc>,
+        _display_object: DisplayObject<'gc>,
         _init_object: Option<Avm1Object<'gc>>,
         _instantiated_by: Instantiator,
         run_frame: bool,
     ) {
-        if self.vm_type(context) == AvmType::Avm2 {
-            let mut allocator = || {
-                let mut activation = Avm2Activation::from_nothing(context.reborrow());
-                let mut proto = activation.context.avm2.prototypes().shape;
-                let constr = proto
-                    .get_property(
-                        proto,
-                        &Avm2QName::new(Avm2Namespace::public(), "constructor"),
-                        &mut activation,
-                    )?
-                    .coerce_to_object(&mut activation)?;
-
-                let object = Avm2StageObject::for_display_object(
-                    activation.context.gc_context,
-                    display_object,
-                    proto,
-                )
-                .into();
-                constr.call(Some(object), &[], &mut activation, Some(proto))?;
-
-                Ok(object)
-            };
-            let result: Result<Avm2Object<'gc>, Avm2Error> = allocator();
-
-            match result {
-                Ok(object) => self.0.write(context.gc_context).avm2_object = Some(object),
-                Err(e) => log::error!("Got {} when constructing AVM2 side of display object", e),
-            }
-        }
-
         if run_frame {
             self.run_frame(context);
         }
@@ -204,6 +207,10 @@ impl<'gc> TDisplayObject<'gc> for Graphic<'gc> {
             .avm2_object
             .map(Avm2Value::from)
             .unwrap_or(Avm2Value::Undefined)
+    }
+
+    fn set_object2(&mut self, mc: MutationContext<'gc, '_>, to: Avm2Object<'gc>) {
+        self.0.write(mc).avm2_object = Some(to);
     }
 
     fn as_drawing(&self, gc_context: MutationContext<'gc, '_>) -> Option<RefMut<'_, Drawing>> {

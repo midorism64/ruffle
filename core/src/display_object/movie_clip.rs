@@ -581,12 +581,18 @@ impl<'gc> MovieClip<'gc> {
                     .library
                     .library_for_movie_mut(movie.clone());
                 let domain = library.avm2_domain();
-                let proto = domain
+                let constr = domain
                     .get_defined_value(&mut activation, name.clone())
                     .and_then(|v| v.coerce_to_object(&mut activation));
 
-                match proto {
-                    Ok(proto) => {
+                match constr {
+                    Ok(constr) => {
+                        activation
+                            .context
+                            .library
+                            .avm2_constructor_registry_mut()
+                            .set_constr_symbol(constr, movie.clone(), id);
+
                         let library = activation
                             .context
                             .library
@@ -594,11 +600,9 @@ impl<'gc> MovieClip<'gc> {
 
                         if id == 0 {
                             //TODO: This assumes only the root movie has `SymbolClass` tags.
-                            self.set_avm2_constructor(activation.context.gc_context, Some(proto));
-                            self.allocate_as_avm2_object(&mut activation.context, self.into());
-                            self.construct_as_avm2_object(&mut activation.context);
+                            self.set_avm2_constructor(activation.context.gc_context, Some(constr));
                         } else if let Some(Character::MovieClip(mc)) = library.character_by_id(id) {
-                            mc.set_avm2_constructor(activation.context.gc_context, Some(proto))
+                            mc.set_avm2_constructor(activation.context.gc_context, Some(constr));
                         } else {
                             log::warn!(
                                 "Symbol class {} cannot be assigned to invalid character id {}",
@@ -1622,11 +1626,10 @@ impl<'gc> MovieClip<'gc> {
             // the old children to decide if they persist (place_frame <= goto_frame).
             let read = self.0.read();
             if let Some(child) = read.container.get_depth(depth) {
+                drop(read);
                 if !child.placed_by_script() {
-                    drop(read);
                     self.remove_child(context, child, Lists::all());
                 } else {
-                    drop(read);
                     self.remove_child(context, child, Lists::DEPTH);
                 }
             }
@@ -1681,9 +1684,13 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         // AVM1 code expects to execute in line with timeline instructions, so
         // it's exempted from frame construction.
         if self.vm_type(context) == AvmType::Avm2 {
-            if matches!(self.object2(), Avm2Value::Undefined) {
-                self.allocate_as_avm2_object(context, (*self).into())
-            }
+            let needs_construction = if matches!(self.object2(), Avm2Value::Undefined) {
+                self.allocate_as_avm2_object(context, (*self).into());
+
+                true
+            } else {
+                false
+            };
 
             if self.determine_next_frame() != NextFrame::First {
                 let mc = self.0.read();
@@ -1710,6 +1717,10 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
                     _ => Ok(()),
                 };
                 let _ = tag_utils::decode_tags(&mut reader, tag_callback, TagCode::ShowFrame);
+            }
+
+            if needs_construction {
+                self.construct_as_avm2_object(context);
             }
         }
     }
@@ -1804,10 +1815,49 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
         point: (Twips, Twips),
+        options: HitTestOptions,
     ) -> bool {
+        if options.skip_invisible && !self.visible() && self.maskee().is_none() {
+            return false;
+        }
+
+        if options.skip_mask && self.maskee().is_some() {
+            return false;
+        }
+
         if self.world_bounds().contains(point) {
-            for child in self.iter_execution_list() {
-                if child.hit_test_shape(context, point) {
+            if let Some(masker) = self.masker() {
+                if !masker.hit_test_shape(
+                    context,
+                    point,
+                    HitTestOptions {
+                        skip_mask: false,
+                        skip_invisible: true,
+                    },
+                ) {
+                    return false;
+                }
+            }
+
+            let mut clip_depth = 0;
+
+            for child in self.iter_render_list() {
+                if child.clip_depth() > 0 {
+                    if child.hit_test_shape(
+                        context,
+                        point,
+                        HitTestOptions {
+                            skip_mask: true,
+                            skip_invisible: true,
+                        },
+                    ) {
+                        clip_depth = 0;
+                    } else {
+                        clip_depth = child.clip_depth();
+                    }
+                } else if child.depth() > clip_depth
+                    && child.hit_test_shape(context, point, options)
+                {
                     return true;
                 }
             }
@@ -1829,6 +1879,19 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         point: (Twips, Twips),
     ) -> Option<DisplayObject<'gc>> {
         if self.visible() {
+            if let Some(masker) = self.masker() {
+                if !masker.hit_test_shape(
+                    context,
+                    point,
+                    HitTestOptions {
+                        skip_mask: false,
+                        skip_invisible: true,
+                    },
+                ) {
+                    return None;
+                }
+            }
+
             if self.world_bounds().contains(point) {
                 // This movieclip operates in "button mode" if it has a mouse handler,
                 // either via on(..) or via property mc.onRelease, etc.
@@ -1848,18 +1911,52 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
                     }
                 };
 
-                if is_button_mode && self.hit_test_shape(context, point) {
+                if is_button_mode
+                    && self.hit_test_shape(
+                        context,
+                        point,
+                        HitTestOptions {
+                            skip_mask: self.maskee().is_none(),
+                            skip_invisible: true,
+                        },
+                    )
+                {
                     return Some(self_node);
                 }
             }
 
             // Maybe we could skip recursing down at all if !world_bounds.contains(point),
             // but a child button can have an invisible hit area outside the parent's bounds.
+            let mut hit_depth = 0;
+            let mut result = None;
+
             for child in self.iter_render_list().rev() {
-                let result = child.mouse_pick(context, child, point);
-                if result.is_some() {
-                    return result;
+                if child.clip_depth() > 0 {
+                    if result.is_some() && child.clip_depth() >= hit_depth {
+                        if child.hit_test_shape(
+                            context,
+                            point,
+                            HitTestOptions {
+                                skip_mask: true,
+                                skip_invisible: true,
+                            },
+                        ) {
+                            return result;
+                        } else {
+                            result = None;
+                        }
+                    }
+                } else if result.is_none() {
+                    result = child.mouse_pick(context, child, point);
+
+                    if result.is_some() {
+                        hit_depth = child.depth();
+                    }
                 }
+            }
+
+            if result.is_some() {
+                return result;
             }
         }
 
@@ -1924,9 +2021,7 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
         self.set_default_instance_name(context);
 
         let vm_type = self.vm_type(context);
-        if vm_type == AvmType::Avm2 {
-            self.construct_as_avm2_object(context);
-        } else if vm_type == AvmType::Avm1 {
+        if vm_type == AvmType::Avm1 {
             self.construct_as_avm1_object(
                 context,
                 display_object,
@@ -1953,6 +2048,10 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
             .and_then(|o| o.as_avm2_object().ok())
             .map(Avm2Value::from)
             .unwrap_or(Avm2Value::Undefined)
+    }
+
+    fn set_object2(&mut self, mc: MutationContext<'gc, '_>, to: Avm2Object<'gc>) {
+        self.0.write(mc).object = Some(to.into());
     }
 
     fn unload(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
@@ -3098,8 +3197,10 @@ impl<'gc, 'a> MovieClip<'gc> {
         // Also note that a loaded child SWF could change background color only
         // if parent SWF is missing SetBackgroundColor tag.
         let background_color = reader.read_rgb()?;
-        if context.background_color.is_none() {
-            *context.background_color = Some(background_color);
+        if context.stage.background_color().is_none() {
+            context
+                .stage
+                .set_background_color(context.gc_context, Some(background_color));
         }
         Ok(())
     }

@@ -168,7 +168,7 @@ impl<'gc> EditText<'gc> {
         let is_editable = !swf_tag.is_read_only;
         let is_html = swf_tag.is_html;
         let document = XmlDocument::new(context.gc_context);
-        let text = swf_tag.initial_text.clone().unwrap_or_default();
+        let text = swf_tag.initial_text.unwrap_or_default();
         let default_format = TextFormat::from_swf_tag(swf_tag.clone(), swf_movie.clone(), context);
         let encoding = swf_movie.encoding();
 
@@ -603,10 +603,7 @@ impl<'gc> EditText<'gc> {
     /// `DisplayObject`.
     pub fn text_transform(self, color: swf::Color, baseline_adjustment: Twips) -> Transform {
         let mut transform: Transform = Default::default();
-        transform.color_transform.r_mult = f32::from(color.r) / 255.0;
-        transform.color_transform.g_mult = f32::from(color.g) / 255.0;
-        transform.color_transform.b_mult = f32::from(color.b) / 255.0;
-        transform.color_transform.a_mult = f32::from(color.a) / 255.0;
+        transform.color_transform.set_mult_color(&color);
 
         // TODO MIKE: This feels incorrect here but is necessary for correct vertical position;
         // the glyphs are rendered relative to the baseline. This should be taken into account either
@@ -891,16 +888,7 @@ impl<'gc> EditText<'gc> {
                             // Set text color to white
                             context.transform_stack.push(&Transform {
                                 matrix: transform.matrix,
-                                color_transform: ColorTransform {
-                                    r_mult: 1.0,
-                                    g_mult: 1.0,
-                                    b_mult: 1.0,
-                                    a_mult: 1.0,
-                                    r_add: 0.0,
-                                    g_add: 0.0,
-                                    b_add: 0.0,
-                                    a_add: 0.0,
-                                },
+                                color_transform: ColorTransform::default(),
                             });
                         }
                         _ => {
@@ -1347,6 +1335,14 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         Some(self.0.read().static_data.swf.clone())
     }
 
+    /// Construct objects placed on this frame.
+    fn construct_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        if self.vm_type(context) == AvmType::Avm2 && matches!(self.object2(), Avm2Value::Undefined)
+        {
+            self.construct_as_avm2_object(context, (*self).into());
+        }
+    }
+
     fn run_frame(&self, _context: &mut UpdateContext) {
         // Noop
     }
@@ -1382,9 +1378,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         let library = context.library.library_for_movie_mut(movie);
         let vm_type = library.avm_type();
 
-        if vm_type == AvmType::Avm2 {
-            self.construct_as_avm2_object(context, display_object);
-        } else if vm_type == AvmType::Avm1 {
+        if vm_type == AvmType::Avm1 {
             self.construct_as_avm1_object(context, display_object, run_frame);
         }
     }
@@ -1405,6 +1399,10 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             .and_then(|o| o.as_avm2_object().ok())
             .map(Avm2Value::from)
             .unwrap_or(Avm2Value::Undefined)
+    }
+
+    fn set_object2(&mut self, mc: MutationContext<'gc, '_>, to: Avm2Object<'gc>) {
+        self.0.write(mc).object = Some(to.into());
     }
 
     fn self_bounds(&self) -> BoundingBox {
@@ -1476,7 +1474,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
     }
 
     fn render_self(&self, context: &mut RenderContext<'_, 'gc>) {
-        if !self.world_bounds().intersects(&context.view_bounds) {
+        if !self.world_bounds().intersects(&context.stage.view_bounds()) {
             // Off-screen; culled
             return;
         }
@@ -1606,7 +1604,17 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         point: (Twips, Twips),
     ) -> Option<DisplayObject<'gc>> {
         // The button is hovered if the mouse is over any child nodes.
-        if self.visible() && self.is_selectable() && self.hit_test_shape(context, point) {
+        if self.visible()
+            && self.is_selectable()
+            && self.hit_test_shape(
+                context,
+                point,
+                HitTestOptions {
+                    skip_mask: true,
+                    skip_invisible: true,
+                },
+            )
+        {
             Some(self_node)
         } else {
             None

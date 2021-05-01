@@ -107,6 +107,40 @@ impl<'gc> StageObject<'gc> {
             context.unbound_text_fields.push(binding.text_field);
         }
     }
+
+    /// Get another level by level name.
+    ///
+    /// Since levels don't have instance names, this function instead parses
+    /// their ID and uses that to retrieve the level.
+    ///
+    /// If the name is a valid level path, it will return the level object
+    /// or `Some(Value::Undefined)` if the level is not occupied.
+    /// Returns `None` if `name` is not a valid level path.
+    fn get_level_by_path(
+        name: &str,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        case_sensitive: bool,
+    ) -> Option<Value<'gc>> {
+        if let Some(slice) = name.get(0..name.len().min(6)) {
+            let is_level = if case_sensitive {
+                slice == "_level"
+            } else {
+                slice.eq_ignore_ascii_case("_level")
+            };
+            if is_level {
+                if let Some(level_id) = name.get(6..).and_then(|v| v.parse::<i32>().ok()) {
+                    let level = context
+                        .stage
+                        .child_by_depth(level_id)
+                        .map(|o| o.object())
+                        .unwrap_or(Value::Undefined);
+                    return Some(level);
+                }
+            }
+        }
+
+        None
+    }
 }
 
 /// A binding from a property of this StageObject to an EditText text field.
@@ -140,10 +174,11 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         if self.has_own_property(activation, name) {
             // 1) Actual properties on the underlying object
             self.get_local(name, activation, (*self).into())
-        } else if let Some(property) = props.read().get_by_name(&name) {
-            // 2) Display object properties such as _x, _y
-            let val = property.get(activation, obj.display_object)?;
-            Ok(val)
+        } else if let Some(level) =
+            Self::get_level_by_path(name, &mut activation.context, case_sensitive)
+        {
+            // 2) _levelN
+            Ok(level)
         } else if let Some(child) = obj
             .display_object
             .as_container()
@@ -151,12 +186,10 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         {
             // 3) Child display objects with the given instance name
             Ok(child.object())
-        } else if let Some(level) =
-            obj.display_object
-                .get_level_by_path(name, &mut activation.context, case_sensitive)
-        {
-            // 4) _levelN
-            Ok(level.object())
+        } else if let Some(property) = props.read().get_by_name(&name) {
+            // 4) Display object properties such as _x, _y
+            let val = property.get(activation, obj.display_object)?;
+            Ok(val)
         } else {
             // 5) Prototype
             Ok(search_prototype(self.proto(), name, activation, (*self).into())?.0)
@@ -246,7 +279,6 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         self.0.read().base.call_setter(name, value, activation)
     }
 
-    #[allow(clippy::new_ret_no_self)]
     fn create_bare_object(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -378,11 +410,7 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
             return true;
         }
 
-        if obj
-            .display_object
-            .get_level_by_path(name, &mut activation.context, case_sensitive)
-            .is_some()
-        {
+        if Self::get_level_by_path(name, &mut activation.context, case_sensitive).is_some() {
             return true;
         }
 

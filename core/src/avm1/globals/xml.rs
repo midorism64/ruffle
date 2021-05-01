@@ -82,7 +82,7 @@ pub fn xmlnode_append_child<'gc>(
         args.get(0)
             .and_then(|n| n.coerce_to_object(activation).as_xml_node()),
     ) {
-        if let Ok(None) = child_xmlnode.parent() {
+        if !xmlnode.has_child(child_xmlnode) {
             let position = xmlnode.children_len();
             if let Err(e) =
                 xmlnode.insert_child(activation.context.gc_context, position, child_xmlnode)
@@ -111,7 +111,7 @@ pub fn xmlnode_insert_before<'gc>(
         args.get(1)
             .and_then(|n| n.coerce_to_object(activation).as_xml_node()),
     ) {
-        if let Ok(None) = child_xmlnode.parent() {
+        if !xmlnode.has_child(child_xmlnode) {
             if let Some(position) = xmlnode.child_position(insertpoint_xmlnode) {
                 if let Err(e) =
                     xmlnode.insert_child(activation.context.gc_context, position, child_xmlnode)
@@ -207,7 +207,7 @@ pub fn xmlnode_remove_node<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
-        if let Ok(Some(mut parent)) = node.parent() {
+        if let Some(mut parent) = node.parent() {
             if let Err(e) = parent.remove_child(activation.context.gc_context, node) {
                 avm_warn!(activation, "Error in XML.removeNode: {}", e);
             }
@@ -323,26 +323,25 @@ pub fn xmlnode_child_nodes<'gc>(
             activation.context.gc_context,
             Some(activation.context.avm1.prototypes.array),
         );
-        if let Some(children) = node.children() {
-            let mut compatible_nodes = 0;
-            for mut child in children {
-                if !is_as2_compatible(child) {
-                    continue;
-                }
 
-                array.set_array_element(
-                    compatible_nodes as usize,
-                    child
-                        .script_object(
-                            activation.context.gc_context,
-                            Some(activation.context.avm1.prototypes.xml_node),
-                        )
-                        .into(),
-                    activation.context.gc_context,
-                );
-
-                compatible_nodes += 1;
+        let mut compatible_nodes = 0;
+        for mut child in node.children() {
+            if !is_as2_compatible(child) {
+                continue;
             }
+
+            array.set_array_element(
+                compatible_nodes as usize,
+                child
+                    .script_object(
+                        activation.context.gc_context,
+                        Some(activation.context.avm1.prototypes.xml_node),
+                    )
+                    .into(),
+                activation.context.gc_context,
+            );
+
+            compatible_nodes += 1;
         }
 
         return Ok(array.into());
@@ -357,27 +356,26 @@ pub fn xmlnode_first_child<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
-        if let Some(mut children) = node.children() {
-            let mut next = children.next();
-            while let Some(my_next) = next {
-                if is_as2_compatible(my_next) {
-                    break;
-                }
-
-                next = my_next.next_sibling().unwrap_or(None);
+        let mut children = node.children();
+        let mut next = children.next();
+        while let Some(my_next) = next {
+            if is_as2_compatible(my_next) {
+                break;
             }
 
-            return Ok(next
-                .map(|mut child| {
-                    child
-                        .script_object(
-                            activation.context.gc_context,
-                            Some(activation.context.avm1.prototypes.xml_node),
-                        )
-                        .into()
-                })
-                .unwrap_or_else(|| Value::Null));
+            next = my_next.next_sibling();
         }
+
+        return Ok(next
+            .map(|mut child| {
+                child
+                    .script_object(
+                        activation.context.gc_context,
+                        Some(activation.context.avm1.prototypes.xml_node),
+                    )
+                    .into()
+            })
+            .unwrap_or_else(|| Value::Null));
     }
 
     Ok(Value::Undefined)
@@ -389,26 +387,25 @@ pub fn xmlnode_last_child<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
-        if let Some(mut children) = node.children() {
-            let mut prev = children.next_back();
-            while let Some(my_prev) = prev {
-                if is_as2_compatible(my_prev) {
-                    break;
-                }
-
-                prev = my_prev.prev_sibling().unwrap_or(None);
+        let mut children = node.children();
+        let mut prev = children.next_back();
+        while let Some(my_prev) = prev {
+            if is_as2_compatible(my_prev) {
+                break;
             }
-            return Ok(prev
-                .map(|mut child| {
-                    child
-                        .script_object(
-                            activation.context.gc_context,
-                            Some(activation.context.avm1.prototypes.xml_node),
-                        )
-                        .into()
-                })
-                .unwrap_or_else(|| Value::Null));
+
+            prev = my_prev.prev_sibling();
         }
+        return Ok(prev
+            .map(|mut child| {
+                child
+                    .script_object(
+                        activation.context.gc_context,
+                        Some(activation.context.avm1.prototypes.xml_node),
+                    )
+                    .into()
+            })
+            .unwrap_or_else(|| Value::Null));
     }
 
     Ok(Value::Undefined)
@@ -422,7 +419,6 @@ pub fn xmlnode_parent_node<'gc>(
     if let Some(node) = this.as_xml_node() {
         return Ok(node
             .parent()
-            .unwrap_or(None)
             .map(|mut parent| {
                 parent
                     .script_object(
@@ -443,13 +439,13 @@ pub fn xmlnode_previous_sibling<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
-        let mut prev = node.prev_sibling().unwrap_or(None);
+        let mut prev = node.prev_sibling();
         while let Some(my_prev) = prev {
             if is_as2_compatible(my_prev) {
                 break;
             }
 
-            prev = my_prev.prev_sibling().unwrap_or(None);
+            prev = my_prev.prev_sibling();
         }
 
         return Ok(prev
@@ -472,13 +468,13 @@ pub fn xmlnode_next_sibling<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(node) = this.as_xml_node() {
-        let mut next = node.next_sibling().unwrap_or(None);
+        let mut next = node.next_sibling();
         while let Some(my_next) = next {
             if is_as2_compatible(my_next) {
                 break;
             }
 
-            next = my_next.next_sibling().unwrap_or(None);
+            next = my_next.next_sibling();
         }
 
         return Ok(next
@@ -891,17 +887,15 @@ pub fn xml_parse_xml<'gc>(
                 "".into()
             };
 
-        if let Some(children) = node.children() {
-            for child in children.rev() {
-                let result = node.remove_child(activation.context.gc_context, child);
-                if let Err(e) = result {
-                    avm_warn!(
-                        activation,
-                        "XML.parseXML: Error removing node contents: {}",
-                        e
-                    );
-                    return Ok(Value::Undefined);
-                }
+        for child in node.children().rev() {
+            let result = node.remove_child(activation.context.gc_context, child);
+            if let Err(e) = result {
+                avm_warn!(
+                    activation,
+                    "XML.parseXML: Error removing node contents: {}",
+                    e
+                );
+                return Ok(Value::Undefined);
             }
         }
 
@@ -923,35 +917,43 @@ pub fn xml_parse_xml<'gc>(
     Ok(Value::Undefined)
 }
 
+pub fn xml_send_and_load<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let url_val = args.get(0).cloned().unwrap_or(Value::Undefined);
+
+    if let Value::Null = url_val {
+        return Ok(Value::Undefined);
+    }
+
+    let target = match args.get(1) {
+        Some(&Value::Object(o)) => o,
+        _ => return Ok(Value::Undefined),
+    };
+
+    if let Some(node) = this.as_xml_node() {
+        let url = url_val.coerce_to_string(activation)?;
+        spawn_xml_fetch(activation, this, target, &url, Some(node))?;
+    }
+    Ok(Value::Undefined)
+}
+
 pub fn xml_load<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let url = args.get(0).cloned().unwrap_or(Value::Undefined);
+    let url_val = args.get(0).cloned().unwrap_or(Value::Undefined);
 
-    if let Value::Null = url {
+    if let Value::Null = url_val {
         return Ok(false.into());
     }
 
-    if let Some(node) = this.as_xml_node() {
-        let url = url.coerce_to_string(activation)?;
-
-        this.set("loaded", false.into(), activation)?;
-
-        let fetch = activation
-            .context
-            .navigator
-            .fetch(&url, RequestOptions::get());
-        let target_clip = activation.target_clip_or_root()?;
-        let process = activation.context.load_manager.load_xml_into_node(
-            activation.context.player.clone().unwrap(),
-            node,
-            target_clip,
-            fetch,
-        );
-
-        activation.context.navigator.spawn_future(process);
+    if let Some(_node) = this.as_xml_node() {
+        let url = url_val.coerce_to_string(activation)?;
+        spawn_xml_fetch(activation, this, this, &url, None)?;
 
         Ok(true.into())
     } else {
@@ -1072,6 +1074,51 @@ pub fn xml_status<'gc>(
     Ok(Value::Undefined)
 }
 
+fn spawn_xml_fetch<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    this: Object<'gc>,
+    loader_object: Object<'gc>,
+    url: &AvmString,
+    send_object: Option<XmlNode<'gc>>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let request_options = if let Some(node) = send_object {
+        // Send `node` as string
+        RequestOptions::post(Some((
+            node.into_string(&mut is_as2_compatible)
+                .unwrap_or_default()
+                .into_bytes(),
+            "application/x-www-form-urlencoded".to_string(),
+        )))
+    } else {
+        // Not sending any parameters.
+        RequestOptions::get()
+    };
+
+    this.set("loaded", false.into(), activation)?;
+
+    let fetch = activation.context.navigator.fetch(&url, request_options);
+    let target_clip = activation.target_clip_or_root()?;
+    // given any defined loader object, sends the request. Will load into LoadVars if given.
+    let process = if let Some(node) = loader_object.as_xml_node() {
+        activation.context.load_manager.load_xml_into_node(
+            activation.context.player.clone().unwrap(),
+            node,
+            target_clip,
+            fetch,
+        )
+    } else {
+        activation.context.load_manager.load_form_into_load_vars(
+            activation.context.player.clone().unwrap(),
+            loader_object,
+            fetch,
+        )
+    };
+
+    activation.context.navigator.spawn_future(process);
+
+    Ok(true.into())
+}
+
 /// Construct the prototype for `XML`.
 pub fn create_xml_proto<'gc>(
     gc_context: MutationContext<'gc, '_>,
@@ -1093,6 +1140,12 @@ pub fn create_xml_proto<'gc>(
         Attribute::READ_ONLY,
     );
     xml_proto.define_value(gc_context, "ignoreWhite", false.into(), Attribute::empty());
+    xml_proto.define_value(
+        gc_context,
+        "contentType",
+        "application/x-www-form-urlencoded".into(),
+        Attribute::empty(),
+    );
     xml_proto.add_property(
         gc_context,
         "xmlDecl",
@@ -1153,6 +1206,13 @@ pub fn create_xml_proto<'gc>(
     xml_proto.as_script_object().unwrap().force_set_function(
         "load",
         xml_load,
+        gc_context,
+        Attribute::empty(),
+        Some(fn_proto),
+    );
+    xml_proto.as_script_object().unwrap().force_set_function(
+        "sendAndLoad",
+        xml_send_and_load,
         gc_context,
         Attribute::empty(),
         Some(fn_proto),

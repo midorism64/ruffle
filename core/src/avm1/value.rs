@@ -111,6 +111,15 @@ impl PartialEq for Value<'_> {
 }
 
 impl<'gc> Value<'gc> {
+    /// Yields `true` if the given value is a primitive value.
+    ///
+    /// Note: Boxed primitive values are not considered primitive - it is
+    /// expected that their `toString`/`valueOf` handlers have already had a
+    /// chance to unbox the primitive contained within.
+    pub fn is_primitive(&self) -> bool {
+        !matches!(self, Value::Object(_))
+    }
+
     pub fn into_number_v1(self) -> f64 {
         match self {
             Value::Bool(true) => 1.0,
@@ -180,10 +189,21 @@ impl<'gc> Value<'gc> {
                     f64::from(n as i32)
                 }
                 "" => f64::NAN,
-                _ => v
-                    .trim_start_matches(|c| c == '\t' || c == '\n' || c == '\r' || c == ' ')
-                    .parse()
-                    .unwrap_or(f64::NAN),
+                _ => {
+                    // Rust parses "inf" and "+inf" into Infinity, but Flash doesn't.
+                    // (as of nightly 4/13, Rust also accepts "infinity")
+                    // Check if the strign starts with 'i' (ignoring any leading +/-).
+                    if v.strip_prefix(['+', '-'].as_ref())
+                        .unwrap_or(&v)
+                        .starts_with(['i', 'I'].as_ref())
+                    {
+                        f64::NAN
+                    } else {
+                        v.trim_start_matches(|c| c == '\t' || c == '\n' || c == '\r' || c == ' ')
+                            .parse()
+                            .unwrap_or(f64::NAN)
+                    }
+                }
             },
             Value::Object(_) => f64::NAN,
         }
@@ -214,7 +234,7 @@ impl<'gc> Value<'gc> {
     ///   callable in `AVM1`. Values that are not callable objects instead
     ///   return `undefined` rather than yielding a runtime error.
     pub fn to_primitive_num(
-        &self,
+        self,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Value<'gc>, Error<'gc>> {
         Ok(match self {
@@ -317,7 +337,7 @@ impl<'gc> Value<'gc> {
             )?),
             (Value::String(_), Value::Object(_)) => {
                 let non_obj_other = other.to_primitive_num(activation)?;
-                if let Value::Object(_) = non_obj_other {
+                if !non_obj_other.is_primitive() {
                     return Ok(false.into());
                 }
 
@@ -325,7 +345,7 @@ impl<'gc> Value<'gc> {
             }
             (Value::Number(_), Value::Object(_)) => {
                 let non_obj_other = other.to_primitive_num(activation)?;
-                if let Value::Object(_) = non_obj_other {
+                if !non_obj_other.is_primitive() {
                     return Ok(false.into());
                 }
 
@@ -333,7 +353,7 @@ impl<'gc> Value<'gc> {
             }
             (Value::Object(_), Value::String(_)) => {
                 let non_obj_self = self.to_primitive_num(activation)?;
-                if let Value::Object(_) = non_obj_self {
+                if !non_obj_self.is_primitive() {
                     return Ok(false.into());
                 }
 
@@ -341,7 +361,7 @@ impl<'gc> Value<'gc> {
             }
             (Value::Object(_), Value::Number(_)) => {
                 let non_obj_self = self.to_primitive_num(activation)?;
-                if let Value::Object(_) = non_obj_self {
+                if !non_obj_self.is_primitive() {
                     return Ok(false.into());
                 }
 

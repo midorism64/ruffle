@@ -56,7 +56,7 @@ impl Color {
         ((self.0 >> 24) & 0xFF) as u8
     }
 
-    pub fn to_premultiplied_alpha(&self, transparency: bool) -> Color {
+    pub fn to_premultiplied_alpha(self, transparency: bool) -> Color {
         // This has some accuracy issues with some alpha values
 
         let old_alpha = if transparency { self.alpha() } else { 255 };
@@ -70,7 +70,7 @@ impl Color {
         Color::argb(old_alpha, r, g, b)
     }
 
-    pub fn to_un_multiplied_alpha(&self) -> Color {
+    pub fn to_un_multiplied_alpha(self) -> Color {
         let a = self.alpha() as f64 / 255.0;
 
         let r = (self.red() as f64 / a).round() as u8;
@@ -164,13 +164,13 @@ pub struct BitmapData {
 }
 
 impl BitmapData {
-    pub fn init_pixels(&mut self, width: u32, height: u32, fill_color: i32, transparency: bool) {
+    pub fn init_pixels(&mut self, width: u32, height: u32, transparency: bool, fill_color: i32) {
         self.width = width;
         self.height = height;
         self.transparency = transparency;
         self.pixels = vec![
             Color(fill_color).to_premultiplied_alpha(self.transparency());
-            (width * height) as usize
+            width as usize * height as usize
         ];
         self.dirty = true;
     }
@@ -215,8 +215,12 @@ impl BitmapData {
         &self.pixels
     }
 
-    pub fn set_pixels(&mut self, pixels: Vec<Color>) {
+    pub fn set_pixels(&mut self, width: u32, height: u32, transparency: bool, pixels: Vec<Color>) {
+        self.width = width;
+        self.height = height;
+        self.transparency = transparency;
         self.pixels = pixels;
+        self.dirty = true;
     }
 
     pub fn pixels_rgba(&self) -> Vec<u8> {
@@ -594,6 +598,66 @@ impl BitmapData {
                 }
 
                 self.set_pixel32_raw(dest_x as u32, dest_y as u32, dest_color);
+            }
+        }
+    }
+
+    pub fn merge(
+        &mut self,
+        source_bitmap: &Self,
+        src_rect: (i32, i32, i32, i32),
+        dest_point: (i32, i32),
+        rgba_mult: (i32, i32, i32, i32),
+    ) {
+        let (src_min_x, src_min_y, src_width, src_height) = src_rect;
+        let (dest_min_x, dest_min_y) = dest_point;
+
+        for src_y in src_min_y..(src_min_y + src_height) {
+            for src_x in src_min_x..(src_min_x + src_width) {
+                let dest_x = src_x - src_min_x + dest_min_x;
+                let dest_y = src_y - src_min_y + dest_min_y;
+
+                if !self.is_point_in_bounds(dest_x, dest_y)
+                    || !source_bitmap.is_point_in_bounds(src_x, src_y)
+                {
+                    continue;
+                }
+
+                let source_color = source_bitmap
+                    .get_pixel_raw(src_x as u32, src_y as u32)
+                    .unwrap()
+                    .to_un_multiplied_alpha();
+
+                let dest_color = self
+                    .get_pixel_raw(dest_x as u32, dest_y as u32)
+                    .unwrap()
+                    .to_un_multiplied_alpha();
+
+                let red_mult = rgba_mult.0.clamp(0, 256) as u16;
+                let green_mult = rgba_mult.1.clamp(0, 256) as u16;
+                let blue_mult = rgba_mult.2.clamp(0, 256) as u16;
+                let alpha_mult = rgba_mult.3.clamp(0, 256) as u16;
+
+                let red = (source_color.red() as u16 * red_mult
+                    + dest_color.red() as u16 * (256 - red_mult))
+                    / 256;
+                let green = (source_color.green() as u16 * green_mult
+                    + dest_color.green() as u16 * (256 - green_mult))
+                    / 256;
+                let blue = (source_color.blue() as u16 * blue_mult
+                    + dest_color.blue() as u16 * (256 - blue_mult))
+                    / 256;
+                let alpha = (source_color.alpha() as u16 * alpha_mult
+                    + dest_color.alpha() as u16 * (256 - alpha_mult))
+                    / 256;
+
+                let mix_color = Color::argb(alpha as u8, red as u8, green as u8, blue as u8);
+
+                self.set_pixel32_raw(
+                    dest_x as u32,
+                    dest_y as u32,
+                    mix_color.to_premultiplied_alpha(self.transparency),
+                );
             }
         }
     }

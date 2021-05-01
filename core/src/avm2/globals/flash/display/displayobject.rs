@@ -9,8 +9,9 @@ use crate::avm2::string::AvmString;
 use crate::avm2::traits::Trait;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
-use crate::display_object::{DisplayObject, TDisplayObject};
+use crate::display_object::{DisplayObject, HitTestOptions, TDisplayObject};
 use crate::types::{Degrees, Percent};
+use crate::vminterface::Instantiator;
 use gc_arena::{GcCell, MutationContext};
 use swf::Twips;
 
@@ -20,8 +21,43 @@ pub fn instance_init<'gc>(
     this: Option<Object<'gc>>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error> {
-    if let Some(this) = this {
+    if let Some(mut this) = this {
         activation.super_init(this, &[])?;
+
+        if this.as_display_object().is_none() {
+            let constructor = this
+                .get_property(
+                    this,
+                    &QName::new(Namespace::public(), "constructor"),
+                    activation,
+                )?
+                .coerce_to_object(activation)?;
+
+            if let Some((movie, symbol)) = activation
+                .context
+                .library
+                .avm2_constructor_registry()
+                .constr_symbol(constructor)
+            {
+                let mut child = activation
+                    .context
+                    .library
+                    .library_for_movie_mut(movie)
+                    .instantiate_by_id(symbol, activation.context.gc_context)?;
+
+                this.init_display_object(activation.context.gc_context, child);
+                child.set_object2(activation.context.gc_context, this);
+
+                child.construct_frame(&mut activation.context);
+                child.post_instantiation(
+                    &mut activation.context,
+                    child,
+                    None,
+                    Instantiator::Avm2,
+                    false,
+                );
+            }
+        }
     }
 
     Ok(Value::Undefined)
@@ -352,7 +388,7 @@ pub fn parent<'gc>(
 ) -> Result<Value<'gc>, Error> {
     if let Some(dobj) = this.and_then(|this| this.as_display_object()) {
         return Ok(dobj
-            .parent()
+            .avm2_parent()
             .map(|parent| parent.object2())
             .unwrap_or(Value::Null));
     }
@@ -374,6 +410,15 @@ pub fn root<'gc>(
     }
 
     Ok(Value::Undefined)
+}
+
+/// Implements `stage`.
+pub fn stage<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Option<Object<'gc>>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error> {
+    Ok(activation.context.stage.object2())
 }
 
 /// Implements `visible`'s getter.
@@ -464,7 +509,16 @@ pub fn hit_test_point<'gc>(
             .coerce_to_boolean();
 
         if shape_flag {
-            return Ok(dobj.hit_test_shape(&mut activation.context, (x, y)).into());
+            return Ok(dobj
+                .hit_test_shape(
+                    &mut activation.context,
+                    (x, y),
+                    HitTestOptions {
+                        skip_mask: true,
+                        skip_invisible: false,
+                    },
+                )
+                .into());
         } else {
             return Ok(dobj.hit_test_bounds((x, y)).into());
         }
@@ -506,15 +560,26 @@ pub fn loader_info<'gc>(
                 let movie = dobj.movie();
 
                 if let Some(movie) = movie {
-                    return Ok(LoaderInfoObject::from_movie(
+                    let obj = LoaderInfoObject::from_movie(
                         movie,
                         root,
                         activation.context.avm2.prototypes().loaderinfo,
                         activation.context.gc_context,
-                    )?
-                    .into());
+                    )?;
+
+                    activation.super_init(obj, &[])?;
+
+                    return Ok(obj.into());
                 }
             }
+        }
+
+        if DisplayObject::ptr_eq(dobj, activation.context.stage.into()) {
+            return Ok(LoaderInfoObject::from_stage(
+                activation.context.avm2.prototypes().loaderinfo,
+                activation.context.gc_context,
+            )
+            .into());
         }
     }
 
@@ -612,6 +677,10 @@ pub fn create_class<'gc>(mc: MutationContext<'gc, '_>) -> GcCell<'gc, Class<'gc>
     write.define_instance_trait(Trait::from_getter(
         QName::new(Namespace::public(), "root"),
         Method::from_builtin(root),
+    ));
+    write.define_instance_trait(Trait::from_getter(
+        QName::new(Namespace::public(), "stage"),
+        Method::from_builtin(stage),
     ));
     write.define_instance_trait(Trait::from_getter(
         QName::new(Namespace::public(), "visible"),

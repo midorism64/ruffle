@@ -129,6 +129,7 @@ impl<'gc> LoadManager<'gc> {
         fetch: OwnedFuture<Vec<u8>, Error>,
         url: String,
         parameters: PropertyMap<String>,
+        on_metadata: Box<dyn FnOnce(&swf::Header)>,
     ) -> OwnedFuture<(), Error> {
         let loader = Loader::RootMovie { self_handle: None };
         let handle = self.add_loader(loader);
@@ -136,7 +137,7 @@ impl<'gc> LoadManager<'gc> {
         let loader = self.get_loader_mut(handle).unwrap();
         loader.introduce_loader_handle(handle);
 
-        loader.root_movie_loader(player, fetch, url, parameters)
+        loader.root_movie_loader(player, fetch, url, parameters, on_metadata)
     }
 
     /// Kick off a movie clip load.
@@ -367,6 +368,7 @@ impl<'gc> Loader<'gc> {
         fetch: OwnedFuture<Vec<u8>, Error>,
         mut url: String,
         parameters: PropertyMap<String>,
+        on_metadata: Box<dyn FnOnce(&swf::Header)>,
     ) -> OwnedFuture<(), Error> {
         let _handle = match self {
             Loader::RootMovie { self_handle, .. } => {
@@ -397,6 +399,8 @@ impl<'gc> Loader<'gc> {
             });
 
             if let Ok((_length, mut movie)) = data {
+                on_metadata(movie.header());
+
                 for (key, value) in parameters.iter() {
                     movie.parameters_mut().insert(key, value.to_owned(), false);
                 }
@@ -432,6 +436,8 @@ impl<'gc> Loader<'gc> {
             .upgrade()
             .expect("Could not upgrade weak reference to player");
 
+        let mut replacing_root_movie = false;
+
         Box::pin(async move {
             player
                 .lock()
@@ -448,6 +454,8 @@ impl<'gc> Loader<'gc> {
                         None => return Err(Error::Cancelled),
                         _ => unreachable!(),
                     };
+
+                    replacing_root_movie = DisplayObject::ptr_eq(clip, uc.stage.root_clip());
 
                     clip.as_movie_clip().unwrap().unload(uc);
 
@@ -477,6 +485,10 @@ impl<'gc> Loader<'gc> {
             });
             if let Ok((length, movie)) = data {
                 let movie = Arc::new(movie);
+                if replacing_root_movie {
+                    player.lock().unwrap().set_root_movie(movie);
+                    return Ok(());
+                }
 
                 player
                     .lock()

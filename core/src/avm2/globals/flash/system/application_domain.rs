@@ -118,6 +118,37 @@ pub fn has_definition<'gc>(
     Ok(Value::Undefined)
 }
 
+/// `domainMemory` property setter
+pub fn set_domain_memory<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    this: Option<Object<'gc>>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error> {
+    if let Some(Value::Object(arg)) = args.get(0) {
+        if let Some(bytearray_obj) = arg.as_bytearray_object() {
+            if let Some(appdomain) = this.and_then(|this| this.as_application_domain()) {
+                appdomain.set_domain_memory(activation.context.gc_context, bytearray_obj);
+            }
+        }
+    }
+
+    Ok(Value::Undefined)
+}
+
+/// `domainMemory` property getter
+pub fn domain_memory<'gc>(
+    _activation: &mut Activation<'_, 'gc, '_>,
+    this: Option<Object<'gc>>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error> {
+    if let Some(appdomain) = this.and_then(|this| this.as_application_domain()) {
+        let bytearray_object: Object<'gc> = appdomain.domain_memory().into();
+        return Ok(bytearray_object.into());
+    }
+
+    Ok(Value::Undefined)
+}
+
 /// Construct `ApplicationDomain`'s class.
 pub fn create_class<'gc>(mc: MutationContext<'gc, '_>) -> GcCell<'gc, Class<'gc>> {
     let class = Class::new(
@@ -145,6 +176,15 @@ pub fn create_class<'gc>(mc: MutationContext<'gc, '_>) -> GcCell<'gc, Class<'gc>
     write.define_class_trait(Trait::from_method(
         QName::new(Namespace::public(), "hasDefinition"),
         Method::from_builtin(has_definition),
+    ));
+
+    write.define_instance_trait(Trait::from_setter(
+        QName::new(Namespace::public(), "domainMemory"),
+        Method::from_builtin(set_domain_memory),
+    ));
+    write.define_instance_trait(Trait::from_getter(
+        QName::new(Namespace::public(), "domainMemory"),
+        Method::from_builtin(domain_memory),
     ));
 
     class

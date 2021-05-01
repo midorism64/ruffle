@@ -283,7 +283,6 @@ pub fn parse_float<'gc>(
 
 pub fn set_interval<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
@@ -292,7 +291,6 @@ pub fn set_interval<'gc>(
 
 pub fn set_timeout<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-
     this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
@@ -301,7 +299,6 @@ pub fn set_timeout<'gc>(
 
 pub fn create_timer<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-
     _this: Object<'gc>,
     args: &[Value<'gc>],
     is_timeout: bool,
@@ -344,7 +341,6 @@ pub fn create_timer<'gc>(
 
 pub fn clear_interval<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-
     _this: Object<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
@@ -354,6 +350,22 @@ pub fn clear_interval<'gc>(
         .coerce_to_i32(activation)?;
     if !activation.context.timers.remove(id) {
         log::info!("clearInterval: Timer {} does not exist", id);
+    }
+
+    Ok(Value::Undefined)
+}
+
+pub fn clear_timeout<'gc>(
+    activation: &mut Activation<'_, 'gc, '_>,
+    _this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let id = args
+        .get(0)
+        .unwrap_or(&Value::Undefined)
+        .coerce_to_i32(activation)?;
+    if !activation.context.timers.remove(id) {
+        log::info!("clearTimeout: Timer {} does not exist", id);
     }
 
     Ok(Value::Undefined)
@@ -1159,6 +1171,13 @@ pub fn create_globals<'gc>(
         Some(function_proto),
     );
     globals.force_set_function(
+        "clearTimeout",
+        clear_timeout,
+        gc_context,
+        Attribute::DONT_ENUM,
+        Some(function_proto),
+    );
+    globals.force_set_function(
         "setTimeout",
         set_timeout,
         gc_context,
@@ -1406,6 +1425,9 @@ mod tests {
             ["0"] => 0.0,
             ["1"] => 1.0,
             ["Infinity"] => f64::NAN,
+            ["-Infinity"] => f64::NAN,
+            ["inf"]  => f64::NAN,
+            ["-inf"]  => f64::NAN,
             ["100a"] => f64::NAN,
             ["0xhello"] => f64::NAN,
             ["123e-1"] => 12.3,

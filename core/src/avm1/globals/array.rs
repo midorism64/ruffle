@@ -3,7 +3,6 @@
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
-use crate::avm1::object::value_object;
 use crate::avm1::property::Attribute;
 use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
 use gc_arena::MutationContext;
@@ -286,14 +285,14 @@ pub fn join<'gc>(
     .into())
 }
 
-fn make_index_absolute(mut index: i32, length: usize) -> usize {
+/// Handles an index parameter that may be positive (starting from beginning) or negaitve (starting from end).
+/// The returned index will be positive and clamped from [0, length].
+fn make_index_absolute(index: i32, length: usize) -> usize {
     if index < 0 {
-        index += length as i32;
-    }
-    if index < 0 {
-        0
+        let offset = index as isize;
+        length.saturating_sub((-offset) as usize)
     } else {
-        index as usize
+        (index as usize).min(length)
     }
 }
 
@@ -366,7 +365,6 @@ pub fn splice<'gc>(
     let to_add = if args.len() > 2 { &args[2..] } else { &[] };
     let offset = to_remove as i32 - to_add.len() as i32;
     let new_length = old_length + to_add.len() - to_remove;
-
     for i in start..start + to_remove {
         removed.set_array_element(
             i - start,
@@ -501,7 +499,7 @@ fn sort<'gc>(
     };
 
     let compare_fn: CompareFn<'_, 'gc> = if let Some(f) = compare_fn {
-        let this = value_object::ValueObject::boxed(activation, Value::Undefined);
+        let this = Value::Undefined.coerce_to_object(activation);
         // this is undefined in the compare function
         Box::new(move |activation, a: &Value<'gc>, b: &Value<'gc>| {
             sort_compare_custom(activation, this, a, b, &f)
@@ -789,11 +787,10 @@ fn sort_compare_fields<'a, 'gc: 'a>(
     field_names: Vec<String>,
     mut compare_fns: Vec<CompareFn<'a, 'gc>>,
 ) -> impl 'a + FnMut(&mut Activation<'_, 'gc, '_>, &Value<'gc>, &Value<'gc>) -> Ordering {
-    use crate::avm1::object::value_object::ValueObject;
     move |activation, a, b| {
         for (field_name, compare_fn) in field_names.iter().zip(compare_fns.iter_mut()) {
-            let a_object = ValueObject::boxed(activation, *a);
-            let b_object = ValueObject::boxed(activation, *b);
+            let a_object = a.coerce_to_object(activation);
+            let b_object = b.coerce_to_object(activation);
             let a_prop = a_object.get(field_name, activation).unwrap();
             let b_prop = b_object.get(field_name, activation).unwrap();
 

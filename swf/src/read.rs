@@ -217,6 +217,12 @@ impl<'a, 'b> BitReader<'a, 'b> {
     }
 
     #[inline]
+    fn read_sbits_fixed8(&mut self, num_bits: u32) -> io::Result<Fixed8> {
+        self.read_sbits(num_bits)
+            .map(|n| Fixed8::from_bits(n as i16))
+    }
+
+    #[inline]
     fn read_sbits_twips(&mut self, num_bits: u32) -> io::Result<Twips> {
         self.read_sbits(num_bits).map(Twips::new)
     }
@@ -560,7 +566,7 @@ impl<'a> Reader<'a> {
 
     pub fn read_rectangle(&mut self) -> Result<Rectangle> {
         let mut bits = self.bits();
-        let num_bits: u32 = bits.read_ubits(5)?;
+        let num_bits = bits.read_ubits(5)?;
         Ok(Rectangle {
             x_min: bits.read_sbits_twips(num_bits)?,
             x_max: bits.read_sbits_twips(num_bits)?,
@@ -595,19 +601,19 @@ impl<'a> Reader<'a> {
         let has_mult = bits.read_bit()?;
         let num_bits = bits.read_ubits(4)?;
         let mut color_transform = ColorTransform {
-            r_multiply: 1f32,
-            g_multiply: 1f32,
-            b_multiply: 1f32,
-            a_multiply: 1f32,
-            r_add: 0i16,
-            g_add: 0i16,
-            b_add: 0i16,
-            a_add: 0i16,
+            r_multiply: Fixed8::ONE,
+            g_multiply: Fixed8::ONE,
+            b_multiply: Fixed8::ONE,
+            a_multiply: Fixed8::ONE,
+            r_add: 0,
+            g_add: 0,
+            b_add: 0,
+            a_add: 0,
         };
         if has_mult {
-            color_transform.r_multiply = bits.read_sbits(num_bits)? as f32 / 256f32;
-            color_transform.g_multiply = bits.read_sbits(num_bits)? as f32 / 256f32;
-            color_transform.b_multiply = bits.read_sbits(num_bits)? as f32 / 256f32;
+            color_transform.r_multiply = bits.read_sbits_fixed8(num_bits)?;
+            color_transform.g_multiply = bits.read_sbits_fixed8(num_bits)?;
+            color_transform.b_multiply = bits.read_sbits_fixed8(num_bits)?;
         }
         if has_add {
             color_transform.r_add = bits.read_sbits(num_bits)? as i16;
@@ -623,20 +629,20 @@ impl<'a> Reader<'a> {
         let has_mult = bits.read_bit()?;
         let num_bits = bits.read_ubits(4)?;
         let mut color_transform = ColorTransform {
-            r_multiply: 1f32,
-            g_multiply: 1f32,
-            b_multiply: 1f32,
-            a_multiply: 1f32,
-            r_add: 0i16,
-            g_add: 0i16,
-            b_add: 0i16,
-            a_add: 0i16,
+            r_multiply: Fixed8::ONE,
+            g_multiply: Fixed8::ONE,
+            b_multiply: Fixed8::ONE,
+            a_multiply: Fixed8::ONE,
+            r_add: 0,
+            g_add: 0,
+            b_add: 0,
+            a_add: 0,
         };
         if has_mult {
-            color_transform.r_multiply = bits.read_sbits(num_bits)? as f32 / 256f32;
-            color_transform.g_multiply = bits.read_sbits(num_bits)? as f32 / 256f32;
-            color_transform.b_multiply = bits.read_sbits(num_bits)? as f32 / 256f32;
-            color_transform.a_multiply = bits.read_sbits(num_bits)? as f32 / 256f32;
+            color_transform.r_multiply = bits.read_sbits_fixed8(num_bits)?;
+            color_transform.g_multiply = bits.read_sbits_fixed8(num_bits)?;
+            color_transform.b_multiply = bits.read_sbits_fixed8(num_bits)?;
+            color_transform.a_multiply = bits.read_sbits_fixed8(num_bits)?;
         }
         if has_add {
             color_transform.r_add = bits.read_sbits(num_bits)? as i16;
@@ -1305,9 +1311,9 @@ impl<'a> Reader<'a> {
     }
 
     fn read_morph_line_style(&mut self, shape_version: u8) -> Result<(LineStyle, LineStyle)> {
+        let start_width = Twips::new(self.read_u16()?);
+        let end_width = Twips::new(self.read_u16()?);
         if shape_version < 2 {
-            let start_width = Twips::new(self.read_u16()?);
-            let end_width = Twips::new(self.read_u16()?);
             let start_color = self.read_rgba()?;
             let end_color = self.read_rgba()?;
 
@@ -1317,8 +1323,6 @@ impl<'a> Reader<'a> {
             ))
         } else {
             // MorphLineStyle2 in DefineMorphShape2.
-            let start_width = Twips::new(self.read_u16()?);
-            let end_width = Twips::new(self.read_u16()?);
             let flags0 = self.read_u8()?;
             let flags1 = self.read_u8()?;
             let start_cap = match flags0 >> 6 {
@@ -1756,9 +1760,9 @@ impl<'a> Reader<'a> {
         let is_edge_record = bits.read_bit()?;
         let shape_record = if is_edge_record {
             let is_straight_edge = bits.read_bit()?;
+            let num_bits = bits.read_ubits(4)? + 2;
             if is_straight_edge {
                 // StraightEdge
-                let num_bits = bits.read_ubits(4)? + 2;
                 let is_axis_aligned = !bits.read_bit()?;
                 let is_vertical = is_axis_aligned && bits.read_bit()?;
                 let delta_x = if !is_axis_aligned || !is_vertical {
@@ -1774,7 +1778,6 @@ impl<'a> Reader<'a> {
                 Some(ShapeRecord::StraightEdge { delta_x, delta_y })
             } else {
                 // CurvedEdge
-                let num_bits = bits.read_ubits(4)? + 2;
                 Some(ShapeRecord::CurvedEdge {
                     control_delta_x: bits.read_sbits_twips(num_bits)?,
                     control_delta_y: bits.read_sbits_twips(num_bits)?,

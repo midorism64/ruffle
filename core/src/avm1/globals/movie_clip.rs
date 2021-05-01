@@ -133,7 +133,14 @@ pub fn hit_test<'gc>(
                 .avm1_root(&activation.context)?
                 .local_to_global((Twips::from_pixels(x), Twips::from_pixels(y)));
             let ret = if shape {
-                movie_clip.hit_test_shape(&mut activation.context, point)
+                movie_clip.hit_test_shape(
+                    &mut activation.context,
+                    point,
+                    HitTestOptions {
+                        skip_mask: true,
+                        skip_invisible: false,
+                    },
+                )
             } else {
                 movie_clip.hit_test_bounds(point)
             };
@@ -877,7 +884,7 @@ fn get_next_highest_depth<'gc>(
     if activation.current_swf_version() >= 7 {
         let depth = std::cmp::max(
             movie_clip
-                .highest_depth()
+                .highest_depth(Depth::MAX)
                 .unwrap_or(0)
                 .wrapping_sub(AVM_DEPTH_BIAS - 1),
             0,
@@ -1193,7 +1200,6 @@ fn get_rect<'gc>(
 pub fn get_url<'gc>(
     _movie_clip: MovieClip<'gc>,
     activation: &mut Activation<'_, 'gc, '_>,
-
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     use crate::avm1::fscommand;

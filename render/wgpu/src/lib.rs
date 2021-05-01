@@ -4,7 +4,7 @@ use ruffle_core::backend::render::{
 };
 use ruffle_core::shape_utils::DistilledShape;
 use ruffle_core::swf;
-use std::borrow::Cow;
+use std::{borrow::Cow, num::NonZeroU32};
 use target::TextureTarget;
 
 use bytemuck::{Pod, Zeroable};
@@ -141,18 +141,8 @@ struct ColorAdjustments {
 impl From<ColorTransform> for ColorAdjustments {
     fn from(transform: ColorTransform) -> Self {
         Self {
-            mult_color: [
-                transform.r_mult,
-                transform.g_mult,
-                transform.b_mult,
-                transform.a_mult,
-            ],
-            add_color: [
-                transform.r_add,
-                transform.g_add,
-                transform.b_add,
-                transform.a_add,
-            ],
+            mult_color: transform.mult_rgba_normalized(),
+            add_color: transform.add_rgba_normalized(),
         }
     }
 }
@@ -301,7 +291,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         let extent = wgpu::Extent3d {
             width: target.width(),
             height: target.height(),
-            depth: 1,
+            depth_or_array_layers: 1,
         };
 
         let frame_buffer_label = create_debug_label!("Framebuffer texture");
@@ -482,27 +472,31 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                                 entries: &[
                                     wgpu::BindGroupEntry {
                                         binding: 0,
-                                        resource: wgpu::BindingResource::Buffer {
-                                            buffer: &tex_transforms_ubo,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(std::mem::size_of::<
-                                                TextureTransforms,
-                                            >(
-                                            )
-                                                as u64),
-                                        },
+                                        resource: wgpu::BindingResource::Buffer(
+                                            wgpu::BufferBinding {
+                                                buffer: &tex_transforms_ubo,
+                                                offset: 0,
+                                                size: wgpu::BufferSize::new(std::mem::size_of::<
+                                                    TextureTransforms,
+                                                >(
+                                                )
+                                                    as u64),
+                                            },
+                                        ),
                                     },
                                     wgpu::BindGroupEntry {
                                         binding: 1,
-                                        resource: wgpu::BindingResource::Buffer {
-                                            buffer: &gradient_ubo,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(std::mem::size_of::<
-                                                GradientUniforms,
-                                            >(
-                                            )
-                                                as u64),
-                                        },
+                                        resource: wgpu::BindingResource::Buffer(
+                                            wgpu::BufferBinding {
+                                                buffer: &gradient_ubo,
+                                                offset: 0,
+                                                size: wgpu::BufferSize::new(std::mem::size_of::<
+                                                    GradientUniforms,
+                                                >(
+                                                )
+                                                    as u64),
+                                            },
+                                        ),
                                     },
                                 ],
                                 label: bind_group_label.as_deref(),
@@ -553,15 +547,17 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                                 entries: &[
                                     wgpu::BindGroupEntry {
                                         binding: 0,
-                                        resource: wgpu::BindingResource::Buffer {
-                                            buffer: &tex_transforms_ubo,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(std::mem::size_of::<
-                                                TextureTransforms,
-                                            >(
-                                            )
-                                                as u64),
-                                        },
+                                        resource: wgpu::BindingResource::Buffer(
+                                            wgpu::BufferBinding {
+                                                buffer: &tex_transforms_ubo,
+                                                offset: 0,
+                                                size: wgpu::BufferSize::new(std::mem::size_of::<
+                                                    TextureTransforms,
+                                                >(
+                                                )
+                                                    as u64),
+                                            },
+                                        ),
                                     },
                                     wgpu::BindGroupEntry {
                                         binding: 1,
@@ -594,7 +590,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
         let extent = wgpu::Extent3d {
             width: bitmap.width,
             height: bitmap.height,
-            depth: 1,
+            depth_or_array_layers: 1,
         };
 
         let data: Cow<[u8]> = match &bitmap.data {
@@ -628,16 +624,16 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             });
 
         self.descriptors.queue.write_texture(
-            wgpu::TextureCopyView {
+            wgpu::ImageCopyTexture {
                 texture: &texture,
                 mip_level: 0,
                 origin: Default::default(),
             },
             &data,
-            wgpu::TextureDataLayout {
+            wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: 4 * extent.width,
-                rows_per_image: 0,
+                bytes_per_row: NonZeroU32::new(4 * extent.width),
+                rows_per_image: None,
             },
             extent,
         );
@@ -656,13 +652,13 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::Buffer {
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &self.quad_tex_transforms,
                             offset: 0,
                             size: wgpu::BufferSize::new(
                                 std::mem::size_of::<TextureTransforms>() as u64
                             ),
-                        },
+                        }),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -713,7 +709,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 size: wgpu::Extent3d {
                     width,
                     height,
-                    depth: 1,
+                    depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
                 sample_count: self.descriptors.msaa_sample_count,
@@ -732,7 +728,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 size: wgpu::Extent3d {
                     width,
                     height,
-                    depth: 1,
+                    depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
                 sample_count: self.descriptors.msaa_sample_count,
@@ -836,15 +832,15 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             .globals
             .update_uniform(&self.descriptors.device, &mut frame_data.0);
 
-        let (color_attachment, resolve_target) = if self.descriptors.msaa_sample_count >= 2 {
+        let (color_view, resolve_target) = if self.descriptors.msaa_sample_count >= 2 {
             (&self.frame_buffer_view, Some(frame_data.1.view()))
         } else {
             (frame_data.1.view(), None)
         };
 
         let render_pass = frame_data.0.begin_render_pass(&wgpu::RenderPassDescriptor {
-            color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
-                attachment: color_attachment,
+            color_attachments: &[wgpu::RenderPassColorAttachment {
+                view: color_view,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: f64::from(clear.r) / 255.0,
@@ -856,8 +852,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 },
                 resolve_target,
             }],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachmentDescriptor {
-                attachment: &self.depth_texture_view,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_texture_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(0.0),
                     store: true,
@@ -1220,20 +1216,20 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         let extent = wgpu::Extent3d {
             width,
             height,
-            depth: 1,
+            depth_or_array_layers: 1,
         };
 
         self.descriptors.queue.write_texture(
-            wgpu::TextureCopyView {
+            wgpu::ImageCopyTexture {
                 texture: &texture,
                 mip_level: 0,
                 origin: Default::default(),
             },
             &rgba,
-            wgpu::TextureDataLayout {
+            wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: 4 * extent.width,
-                rows_per_image: 0,
+                bytes_per_row: NonZeroU32::new(4 * extent.width),
+                rows_per_image: None,
             },
             extent,
         );

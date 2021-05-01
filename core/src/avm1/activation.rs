@@ -1,7 +1,7 @@
 use crate::avm1::callable_value::CallableValue;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Avm1Function, ExecutionReason, FunctionObject};
-use crate::avm1::object::{value_object, Object, TObject};
+use crate::avm1::object::{Object, TObject};
 use crate::avm1::property::Attribute;
 use crate::avm1::scope::Scope;
 use crate::avm1::{
@@ -343,7 +343,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     ) -> Self {
         let version = context.swf.version();
         let globals = context.avm1.global_object_cell();
-        let level0 = *context.levels.get(&0).unwrap();
+        let level0 = context.stage.root_clip();
 
         Self::from_nothing(context, id, version, globals, level0)
     }
@@ -805,8 +805,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_call_function(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let fn_name_value = self.context.avm1.pop();
         let fn_name = fn_name_value.coerce_to_string(self)?;
-        let mut args = Vec::new();
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as i64; // TODO(Herschel): max arg count?
+        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize; // TODO(Herschel): max arg count?
+        let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
         }
@@ -831,8 +831,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_call_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let method = self.context.avm1.pop();
         let object_val = self.context.avm1.pop();
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as i64; // TODO(Herschel): max arg count?
-        let mut args = Vec::new();
+        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize; // TODO(Herschel): max arg count?
+        let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
         }
@@ -843,7 +843,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             return Ok(FrameControl::Continue);
         }
 
-        let object = value_object::ValueObject::boxed(self, object_val);
+        let object = object_val.coerce_to_object(self);
 
         let method_name = if method != Value::Undefined {
             let name = method.coerce_to_string(self)?;
@@ -860,8 +860,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             // Call `this[method_name]`
             object.call_method(&method_name.as_str(), &args, self)?
         } else {
-            // Undefined/empty method name; call `this` as a function
-            let this = self.target_clip_or_root()?.object().coerce_to_object(self);
+            // Undefined/empty method name; call `this` as a function.
+            // TODO: Pass primitive value instead of boxing (#843).
+            let this = Value::Undefined.coerce_to_object(self);
             object.call("[Anonymous]", self, this, None, &args)?
         };
 
@@ -1041,10 +1042,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         //Fun fact: This isn't in the Adobe SWF19 spec, but this opcode returns
         //a boolean based on if the delete actually deleted something.
-        let did_exist = self.is_defined(&name);
-
-        self.scope_cell().read().delete(self, &name);
-        self.context.avm1.push(did_exist);
+        let success = self.scope_cell().read().delete(self, &name);
+        self.context.avm1.push(success);
 
         Ok(FrameControl::Continue)
     }
@@ -1167,7 +1166,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let name_val = self.context.avm1.pop();
         let name = name_val.coerce_to_string(self)?;
         let object_val = self.context.avm1.pop();
-        let object = value_object::ValueObject::boxed(self, object_val);
+        let object = object_val.coerce_to_object(self);
 
         let result = object.get(&name, self)?;
         self.context.avm1.push(result);
@@ -1233,7 +1232,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let target = target.as_ref();
         let url = url.to_string_lossy(self.encoding());
         if target.starts_with("_level") && target.len() > 6 {
-            match target[6..].parse::<u32>() {
+            match target[6..].parse::<i32>() {
                 Ok(level_id) => {
                     let fetch = self.context.navigator.fetch(&url, RequestOptions::get());
                     let level = self.resolve_level(level_id);
@@ -1357,7 +1356,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             return Ok(FrameControl::Continue);
         } else if window_target.starts_with("_level") && url.len() > 6 {
             // target of `_level#` indicates a `loadMovieNum` call.
-            match window_target[6..].parse::<u32>() {
+            match window_target[6..].parse::<i32>() {
                 Ok(level_id) => {
                     let fetch = self.context.navigator.fetch(&url, RequestOptions::get());
                     let level = self.resolve_level(level_id);
@@ -1687,8 +1686,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_new_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let method_name = self.context.avm1.pop();
         let object_val = self.context.avm1.pop();
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as i64;
-        let mut args = Vec::new();
+        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize;
+        let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
         }
@@ -1699,7 +1698,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             return Ok(FrameControl::Continue);
         }
 
-        let object = value_object::ValueObject::boxed(self, object_val);
+        let object = object_val.coerce_to_object(self);
         let constructor = object.get(&method_name.coerce_to_string(self)?, self)?;
         if let Value::Object(constructor) = constructor {
             //TODO: What happens if you `ActionNewMethod` without a method name?
@@ -1720,8 +1719,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_new_object(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let fn_name_val = self.context.avm1.pop();
         let fn_name = fn_name_val.coerce_to_string(self)?;
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as i64;
-        let mut args = Vec::new();
+        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize;
+        let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
         }
@@ -2808,9 +2807,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     ///
     /// If the level does not exist, then it will be created and instantiated
     /// with a script object.
-    pub fn resolve_level(&mut self, level_id: u32) -> DisplayObject<'gc> {
-        if let Some(level) = self.context.levels.get(&level_id) {
-            *level
+    pub fn resolve_level(&mut self, level_id: i32) -> DisplayObject<'gc> {
+        if let Some(level) = self.context.stage.child_by_depth(level_id) {
+            level
         } else {
             let level: DisplayObject<'_> = MovieClip::new(
                 SwfSlice::empty(self.base_clip().movie().unwrap()),
@@ -2820,7 +2819,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
             level.set_depth(self.context.gc_context, level_id as i32);
             level.set_default_root_name(&mut self.context);
-            self.context.levels.insert(level_id, level);
+            self.context
+                .stage
+                .replace_at_depth(&mut self.context, level, level_id);
             level.post_instantiation(&mut self.context, level, None, Instantiator::Movie, false);
 
             level

@@ -9,7 +9,9 @@ use crate::avm2::{Avm2, Error};
 use crate::collect::CollectWrapper;
 use bitflags::bitflags;
 use gc_arena::{Collect, GcCell, MutationContext};
-use swf::avm2::types::{Class as AbcClass, Instance as AbcInstance};
+use swf::avm2::types::{
+    Class as AbcClass, Instance as AbcInstance, Method as AbcMethod, MethodBody as AbcMethodBody,
+};
 
 bitflags! {
     /// All possible attributes for a given class.
@@ -106,6 +108,28 @@ fn do_trait_lookup<'gc>(
     }
 
     Ok(())
+}
+
+/// Find traits in a list of traits matching a slot ID.
+fn do_trait_lookup_by_slot<'gc>(
+    id: u32,
+    all_traits: &[Trait<'gc>],
+) -> Result<Option<Trait<'gc>>, Error> {
+    for trait_entry in all_traits {
+        let trait_id = match trait_entry.kind() {
+            TraitKind::Slot { slot_id, .. } => slot_id,
+            TraitKind::Const { slot_id, .. } => slot_id,
+            TraitKind::Class { slot_id, .. } => slot_id,
+            TraitKind::Function { slot_id, .. } => slot_id,
+            _ => continue,
+        };
+
+        if id == *trait_id {
+            return Ok(Some(trait_entry.clone()));
+        }
+    }
+
+    Ok(None)
 }
 
 impl<'gc> Class<'gc> {
@@ -270,6 +294,46 @@ impl<'gc> Class<'gc> {
         Ok(())
     }
 
+    pub fn from_method_body(
+        avm2: &mut Avm2<'gc>,
+        mc: MutationContext<'gc, '_>,
+        translation_unit: TranslationUnit<'gc>,
+        method: &AbcMethod,
+        body: &AbcMethodBody,
+    ) -> Result<GcCell<'gc, Self>, Error> {
+        let name = translation_unit.pool_string(method.name.as_u30(), mc)?;
+        let mut traits = Vec::new();
+
+        for trait_entry in body.traits.iter() {
+            traits.push(Trait::from_abc_trait(
+                translation_unit,
+                &trait_entry,
+                avm2,
+                mc,
+            )?);
+        }
+
+        Ok(GcCell::allocate(
+            mc,
+            Self {
+                name: QName::dynamic_name(name),
+                super_class: None,
+                attributes: CollectWrapper(ClassAttributes::empty()),
+                protected_namespace: None,
+                interfaces: Vec::new(),
+                instance_init: Method::from_builtin(|_, _, _| {
+                    Err("Do not call activation initializers!".into())
+                }),
+                instance_traits: traits,
+                class_init: Method::from_builtin(|_, _, _| {
+                    Err("Do not call activation class initializers!".into())
+                }),
+                class_traits: Vec::new(),
+                traits_loaded: true,
+            },
+        ))
+    }
+
     pub fn name(&self) -> &QName<'gc> {
         &self.name
     }
@@ -302,6 +366,20 @@ impl<'gc> Class<'gc> {
         known_traits: &mut Vec<Trait<'gc>>,
     ) -> Result<(), Error> {
         do_trait_lookup(name, known_traits, &self.class_traits)
+    }
+
+    /// Given a slot ID, append class traits matching the slot to a list of
+    /// known traits.
+    ///
+    /// This function adds its result onto the list of known traits, with the
+    /// caveat that duplicate entries will be replaced (if allowed). As such, this
+    /// function should be run on the class hierarchy from top to bottom.
+    ///
+    /// If a given trait has an invalid name, attempts to override a final trait,
+    /// or overlaps an existing trait without being an override, then this function
+    /// returns an error.
+    pub fn lookup_class_traits_by_slot(&self, id: u32) -> Result<Option<Trait<'gc>>, Error> {
+        do_trait_lookup_by_slot(id, &self.class_traits)
     }
 
     /// Determines if this class provides a given trait on itself.
@@ -355,6 +433,20 @@ impl<'gc> Class<'gc> {
         known_traits: &mut Vec<Trait<'gc>>,
     ) -> Result<(), Error> {
         do_trait_lookup(name, known_traits, &self.instance_traits)
+    }
+
+    /// Given a slot ID, append instance traits matching the slot to a list of
+    /// known traits.
+    ///
+    /// This function adds its result onto the list of known traits, with the
+    /// caveat that duplicate entries will be replaced (if allowed). As such, this
+    /// function should be run on the class hierarchy from top to bottom.
+    ///
+    /// If a given trait has an invalid name, attempts to override a final trait,
+    /// or overlaps an existing trait without being an override, then this function
+    /// returns an error.
+    pub fn lookup_instance_traits_by_slot(&self, id: u32) -> Result<Option<Trait<'gc>>, Error> {
+        do_trait_lookup_by_slot(id, &self.instance_traits)
     }
 
     /// Determines if this class provides a given trait on its instances.

@@ -203,6 +203,7 @@ swf_tests! {
     (xml_append_child, "avm1/xml_append_child", 1),
     (xml_append_child_with_parent, "avm1/xml_append_child_with_parent", 1),
     (xml_remove_node, "avm1/xml_remove_node", 1),
+    (xml_reparenting, "avm1/xml_reparenting", 1),
     (xml_insert_before, "avm1/xml_insert_before", 1),
     (xml_to_string, "avm1/xml_to_string", 1),
     (xml_to_string_comment, "avm1/xml_to_string_comment", 1),
@@ -225,6 +226,7 @@ swf_tests! {
     (loadmovie, "avm1/loadmovie", 2),
     (loadmovienum, "avm1/loadmovienum", 2),
     (loadmovie_registerclass, "avm1/loadmovie_registerclass", 2),
+    (loadmovie_replace_root, "avm1/loadmovie_replace_root", 3),
     (loadmovie_method, "avm1/loadmovie_method", 2),
     (loadmovie_fail, "avm1/loadmovie_fail", 1),
     (unloadmovie, "avm1/unloadmovie", 11),
@@ -328,6 +330,8 @@ swf_tests! {
     (gradient_bevel_filter, "avm1/gradient_bevel_filter", 1),
     (gradient_glow_filter, "avm1/gradient_glow_filter", 1),
     (bitmap_data, "avm1/bitmap_data", 1),
+    (bitmap_data_max_size_swf9, "avm1/bitmap_data_max_size_swf9", 1),
+    (bitmap_data_max_size_swf10, "avm1/bitmap_data_max_size_swf10", 1),
     (bitmap_data_noise, "avm1/bitmap_data_noise", 1),
     (array_call_method, "avm1/array_call_method", 1),
     (bad_placeobject_clipaction, "avm1/bad_placeobject_clipaction", 2),
@@ -369,7 +373,10 @@ swf_tests! {
     (as3_is_finite, "avm2/is_finite", 1),
     (as3_is_nan, "avm2/is_nan", 1),
     (as3_istype, "avm2/istype", 1),
+    (as3_istypelate, "avm2/istypelate", 1),
     (as3_instanceof, "avm2/instanceof", 1),
+    (as3_astype, "avm2/astype", 1),
+    (as3_astypelate, "avm2/astypelate", 1),
     (as3_truthiness, "avm2/truthiness", 1),
     (as3_falsiness, "avm2/falsiness", 1),
     (as3_boolean_negation, "avm2/boolean_negation", 1),
@@ -546,6 +553,18 @@ swf_tests! {
     (as3_op_lookupswitch, "avm2/op_lookupswitch", 1),
     (as3_loaderinfo_properties, "avm2/loaderinfo_properties", 2),
     (as3_loaderinfo_quine, "avm2/loaderinfo_quine", 2),
+    (nan_scale, "avm1/nan_scale", 1),
+    (as3_nan_scale, "avm2/nan_scale", 1),
+    (as3_documentclass, "avm2/documentclass", 1),
+    (timer_run_actions, "avm1/timer_run_actions", 1),
+    (as3_op_coerce, "avm2/op_coerce", 1),
+    (as3_domain_memory, "avm2/domain_memory", 1),
+    (as3_movieclip_symbol_constr, "avm2/movieclip_symbol_constr", 1),
+    (as3_stage_access, "avm2/stage_access", 1),
+    (as3_stage_displayobject_properties, "avm2/stage_displayobject_properties", 1),
+    (as3_stage_loaderinfo_properties, "avm2/stage_loaderinfo_properties", 2),
+    (as3_stage_properties, "avm2/stage_properties", 1),
+    (as3_closures, "avm2/closures", 1),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -686,6 +705,25 @@ fn timeout_avm1() -> Result<(), Error> {
                 .lock()
                 .unwrap()
                 .set_max_execution_duration(Duration::from_secs(5));
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+}
+
+#[test]
+fn stage_scale_mode() -> Result<(), Error> {
+    set_logger();
+    test_swf_with_hooks(
+        "tests/swfs/avm1/stage_scale_mode/test.swf",
+        1,
+        "tests/swfs/avm1/stage_scale_mode/output.txt",
+        |player| {
+            // Simulate a large viewport to test stage size.
+            player
+                .lock()
+                .unwrap()
+                .set_viewport_dimensions(900, 900, 1.0);
             Ok(())
         },
         |_| Ok(()),
@@ -835,7 +873,7 @@ fn run_swf(
     player
         .lock()
         .unwrap()
-        .set_max_execution_duration(Duration::from_secs(200));
+        .set_max_execution_duration(Duration::from_secs(300));
 
     before_start(player.clone())?;
 
