@@ -10,6 +10,37 @@ use crate::character::Character;
 use crate::display_object::TDisplayObject;
 use gc_arena::{GcCell, MutationContext};
 
+fn is_size_valid(swf_version: u8, width: u32, height: u32) -> bool {
+    // From https://help.adobe.com/en_US/FlashPlatform/reference/actionscript/3/flash/display/BitmapData.html:
+    // "In AIR 1.5 and Flash Player 10, the maximum size for a BitmapData object is 8,191 pixels in
+    // width or height, and the total number of pixels cannot exceed 16,777,215 pixels. (So, if a
+    // BitmapData object is 8,191 pixels wide, it can only be 2,048 pixels high.) In Flash Player 9
+    // and earlier and AIR 1.1 and earlier, the limitation is 2,880 pixels in height and 2,880 in width.
+    // Starting with AIR 3 and Flash player 11, the size limits for a BitmapData object have been removed.
+    // The maximum size of a bitmap is now dependent on the operating system."
+    //
+    // In addition, width and height of 0 are invalid in all versions.
+    if width == 0 || height == 0 {
+        return false;
+    }
+    if swf_version <= 9 {
+        if width > 2880 || height > 2880 {
+            return false;
+        }
+    } else if swf_version <= 12 {
+        if width >= 0x2000 || height >= 0x2000 || width * height >= 0x1000000 {
+            return false;
+        }
+    } else {
+        // These limits are undocumented, but seem to be reliable.
+        // TODO: Do they vary across different machines?
+        if width > 0x6666666 || height > 0x6666666 || width as u64 * height as u64 >= 0x20000000 {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn constructor<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     this: Object<'gc>,
@@ -18,35 +49,33 @@ pub fn constructor<'gc>(
     let width = args
         .get(0)
         .unwrap_or(&Value::Number(0.0))
-        .coerce_to_i32(activation)?;
+        .coerce_to_i32(activation)? as u32;
 
     let height = args
         .get(1)
         .unwrap_or(&Value::Number(0.0))
-        .coerce_to_i32(activation)?;
-
-    if width > 2880 || height > 2880 || width <= 0 || height <= 0 {
-        log::warn!("Invalid BitmapData size {}x{}", width, height);
-        return Ok(Value::Undefined);
-    }
+        .coerce_to_i32(activation)? as u32;
 
     let transparency = args
         .get(2)
         .unwrap_or(&Value::Bool(true))
-        .as_bool(activation.current_swf_version());
+        .as_bool(activation.swf_version());
 
     let fill_color = args
         .get(3)
-        // can't write this in hex
-        // 0xFFFFFFFF as f64;
-        .unwrap_or(&Value::Number(4294967295_f64))
+        .unwrap_or(&Value::Number(4294967295f64)) // 0xFFFFFFFF
         .coerce_to_i32(activation)?;
+
+    if !is_size_valid(activation.swf_version(), width, height) {
+        log::warn!("Invalid BitmapData size: {}x{}", width, height);
+        return Ok(Value::Undefined);
+    }
 
     if let Some(bitmap_data) = this.as_bitmap_data_object() {
         bitmap_data
             .bitmap_data()
             .write(activation.context.gc_context)
-            .init_pixels(width as u32, height as u32, fill_color, transparency);
+            .init_pixels(width, height, transparency, fill_color);
     }
 
     Ok(this.into())
@@ -345,27 +374,22 @@ pub fn clone<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(bitmap_data) = this.as_bitmap_data_object() {
         if !bitmap_data.disposed() {
-            let proto = activation.context.avm1.prototypes.bitmap_data_constructor;
-            let new_bitmap_data = proto.construct(
-                activation,
-                &[
-                    bitmap_data.bitmap_data().read().width().into(),
-                    bitmap_data.bitmap_data().read().height().into(),
-                    bitmap_data.bitmap_data().read().transparency().into(),
-                    0xFFFFFF.into(),
-                ],
-            )?;
-            let new_bitmap_data_object = new_bitmap_data
-                .coerce_to_object(activation)
-                .as_bitmap_data_object()
-                .unwrap();
+            let prototype = activation.context.avm1.prototypes.bitmap_data;
+            let new_bitmap_data = prototype.create_bare_object(activation, prototype)?;
 
-            new_bitmap_data_object
+            new_bitmap_data
+                .as_bitmap_data_object()
+                .unwrap()
                 .bitmap_data()
                 .write(activation.context.gc_context)
-                .set_pixels(bitmap_data.bitmap_data().read().pixels().to_vec());
+                .set_pixels(
+                    bitmap_data.bitmap_data().read().width(),
+                    bitmap_data.bitmap_data().read().height(),
+                    bitmap_data.bitmap_data().read().transparency(),
+                    bitmap_data.bitmap_data().read().pixels().to_vec(),
+                );
 
-            return Ok(new_bitmap_data);
+            return Ok(new_bitmap_data.into());
         }
     }
 
@@ -440,7 +464,7 @@ pub fn noise<'gc>(
     let gray_scale = args
         .get(4)
         .unwrap_or(&Value::Bool(false))
-        .as_bool(activation.current_swf_version());
+        .as_bool(activation.swf_version());
 
     if let Some(bitmap_data) = this.as_bitmap_data_object() {
         if !bitmap_data.disposed() {
@@ -521,14 +545,14 @@ pub fn color_transform<'gc>(
                 .unwrap_or(&Value::Undefined)
                 .coerce_to_object(activation);
 
-            let x = rectangle.get("x", activation)?.coerce_to_i32(activation)?;
-            let y = rectangle.get("y", activation)?.coerce_to_i32(activation)?;
+            let x = rectangle.get("x", activation)?.coerce_to_f64(activation)? as i32;
+            let y = rectangle.get("y", activation)?.coerce_to_f64(activation)? as i32;
             let width = rectangle
                 .get("width", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
             let height = rectangle
                 .get("height", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
 
             let min_x = x.max(0) as u32;
             let end_x = (x + width) as u32;
@@ -559,7 +583,7 @@ pub fn get_color_bounds_rect<'gc>(
             let find_color = args
                 .get(2)
                 .unwrap_or(&Value::Bool(true))
-                .as_bool(activation.current_swf_version());
+                .as_bool(activation.swf_version());
 
             if let (Some(mask_val), Some(color_val)) = (args.get(0), args.get(1)) {
                 let mask = mask_val.coerce_to_i32(activation)?;
@@ -689,24 +713,24 @@ pub fn copy_pixels<'gc>(
 
             let src_min_x = source_rect
                 .get("x", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
             let src_min_y = source_rect
                 .get("y", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
             let src_width = source_rect
                 .get("width", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
             let src_height = source_rect
                 .get("height", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
 
             let dest_point = args
                 .get(2)
                 .unwrap_or(&Value::Undefined)
                 .coerce_to_object(activation);
 
-            let dest_x = dest_point.get("x", activation)?.coerce_to_i32(activation)?;
-            let dest_y = dest_point.get("y", activation)?.coerce_to_i32(activation)?;
+            let dest_x = dest_point.get("x", activation)?.coerce_to_f64(activation)? as i32;
+            let dest_y = dest_point.get("y", activation)?.coerce_to_f64(activation)? as i32;
 
             if let Some(src_bitmap) = source_bitmap.as_bitmap_data_object() {
                 if !src_bitmap.disposed() {
@@ -731,11 +755,13 @@ pub fn copy_pixels<'gc>(
 
                         let alpha_x = alpha_point
                             .get("x", activation)?
-                            .coerce_to_i32(activation)?;
+                            .coerce_to_f64(activation)?
+                            as i32;
 
                         let alpha_y = alpha_point
                             .get("y", activation)?
-                            .coerce_to_i32(activation)?;
+                            .coerce_to_f64(activation)?
+                            as i32;
 
                         let alpha_bitmap = args
                             .get(3)
@@ -800,13 +826,90 @@ pub fn copy_pixels<'gc>(
 }
 
 pub fn merge<'gc>(
-    _activation: &mut Activation<'_, 'gc, '_>,
+    activation: &mut Activation<'_, 'gc, '_>,
     this: Object<'gc>,
-    _args: &[Value<'gc>],
+    args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if let Some(bitmap_data) = this.as_bitmap_data_object() {
         if !bitmap_data.disposed() {
-            log::warn!("BitmapData.merge - not yet implemented");
+            let source_bitmap = args
+                .get(0)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_object(activation);
+
+            let source_rect = args
+                .get(1)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_object(activation);
+
+            let src_min_x = source_rect
+                .get("x", activation)?
+                .coerce_to_f64(activation)? as i32;
+            let src_min_y = source_rect
+                .get("y", activation)?
+                .coerce_to_f64(activation)? as i32;
+            let src_width = source_rect
+                .get("width", activation)?
+                .coerce_to_f64(activation)? as i32;
+            let src_height = source_rect
+                .get("height", activation)?
+                .coerce_to_f64(activation)? as i32;
+
+            let dest_point = args
+                .get(2)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_object(activation);
+
+            let dest_x = dest_point.get("x", activation)?.coerce_to_f64(activation)? as i32;
+            let dest_y = dest_point.get("y", activation)?.coerce_to_f64(activation)? as i32;
+
+            let red_mult = args
+                .get(3)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_i32(activation)?;
+
+            let green_mult = args
+                .get(4)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_i32(activation)?;
+
+            let blue_mult = args
+                .get(5)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_i32(activation)?;
+
+            let alpha_mult = args
+                .get(6)
+                .unwrap_or(&Value::Undefined)
+                .coerce_to_i32(activation)?;
+
+            if let Some(src_bitmap) = source_bitmap.as_bitmap_data_object() {
+                if !src_bitmap.disposed() {
+                    // dealing with object aliasing...
+                    let src_bitmap_clone: BitmapData; // only initialized if source is the same object as self
+                    let src_bitmap_data_cell = src_bitmap.bitmap_data();
+                    let src_bitmap_gc_ref; // only initialized if source is a different object than self
+                    let source_bitmap_ref = // holds the reference to either of the ones above
+                        if GcCell::ptr_eq(src_bitmap.bitmap_data(), bitmap_data.bitmap_data()) {
+                            src_bitmap_clone = src_bitmap_data_cell.read().clone();
+                            &src_bitmap_clone
+                        } else {
+                            src_bitmap_gc_ref = src_bitmap_data_cell.read();
+                            &src_bitmap_gc_ref
+                        };
+
+                    bitmap_data
+                        .bitmap_data()
+                        .write(activation.context.gc_context)
+                        .merge(
+                            source_bitmap_ref,
+                            (src_min_x, src_min_y, src_width, src_height),
+                            (dest_x, dest_y),
+                            (red_mult, green_mult, blue_mult, alpha_mult),
+                        );
+                }
+            }
+
             return Ok(Value::Undefined);
         }
     }
@@ -833,24 +936,24 @@ pub fn palette_map<'gc>(
 
             let src_min_x = source_rect
                 .get("x", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
             let src_min_y = source_rect
                 .get("y", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
             let src_width = source_rect
                 .get("width", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
             let src_height = source_rect
                 .get("height", activation)?
-                .coerce_to_i32(activation)?;
+                .coerce_to_f64(activation)? as i32;
 
             let dest_point = args
                 .get(2)
                 .unwrap_or(&Value::Undefined)
                 .coerce_to_object(activation);
 
-            let dest_x = dest_point.get("x", activation)?.coerce_to_i32(activation)?;
-            let dest_y = dest_point.get("y", activation)?.coerce_to_i32(activation)?;
+            let dest_x = dest_point.get("x", activation)?.coerce_to_f64(activation)? as i32;
+            let dest_y = dest_point.get("y", activation)?.coerce_to_f64(activation)? as i32;
 
             let mut get_channel = |index: usize, shift: usize| -> Result<[u32; 256], Error<'gc>> {
                 let arg = args.get(index).unwrap_or(&Value::Null);
@@ -1203,22 +1306,23 @@ pub fn load_bitmap<'gc>(
 
     if let Some(Character::Bitmap(bitmap_object)) = character {
         if let Some(bitmap) = renderer.get_bitmap_pixels(bitmap_object.bitmap_handle()) {
-            let proto = activation.context.avm1.prototypes.bitmap_data_constructor;
-            let new_bitmap =
-                proto.construct(activation, &[bitmap.width.into(), bitmap.height.into()])?;
-            let new_bitmap_object = new_bitmap
-                .coerce_to_object(activation)
-                .as_bitmap_data_object()
-                .unwrap();
+            let prototype = activation.context.avm1.prototypes.bitmap_data;
+            let new_bitmap_data = prototype.create_bare_object(activation, prototype)?;
 
             let pixels: Vec<i32> = bitmap.data.into();
-
-            new_bitmap_object
+            new_bitmap_data
+                .as_bitmap_data_object()
+                .unwrap()
                 .bitmap_data()
                 .write(activation.context.gc_context)
-                .set_pixels(pixels.into_iter().map(|p| p.into()).collect());
+                .set_pixels(
+                    bitmap.width,
+                    bitmap.height,
+                    true,
+                    pixels.into_iter().map(|p| p.into()).collect(),
+                );
 
-            return Ok(new_bitmap);
+            return Ok(new_bitmap_data.into());
         }
     }
 

@@ -61,6 +61,22 @@ pub fn create_proto<'gc>(
         Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
     );
 
+    object.as_script_object().unwrap().force_set_function(
+        "getDuration",
+        duration,
+        gc_context,
+        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
+        Some(fn_proto),
+    );
+
+    object.as_script_object().unwrap().force_set_function(
+        "setDuration",
+        |_, _, _| Ok(Value::Undefined),
+        gc_context,
+        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
+        Some(fn_proto),
+    );
+
     object.add_property(
         gc_context,
         "id3",
@@ -188,8 +204,8 @@ fn attach_sound<'gc>(
         let name = name.coerce_to_string(activation)?;
         let movie = sound_object
             .owner()
-            .or_else(|| activation.context.levels.get(&0).copied())
-            .and_then(|o| o.movie());
+            .unwrap_or_else(|| activation.context.stage.root_clip())
+            .movie();
         if let Some(movie) = movie {
             if let Some(Character::Sound(sound)) = activation
                 .context
@@ -200,11 +216,7 @@ fn attach_sound<'gc>(
                 sound_object.set_sound(activation.context.gc_context, Some(*sound));
                 sound_object.set_duration(
                     activation.context.gc_context,
-                    activation
-                        .context
-                        .audio
-                        .get_sound_duration(*sound)
-                        .unwrap_or(0),
+                    activation.context.audio.get_sound_duration(*sound),
                 );
                 sound_object.set_position(activation.context.gc_context, 0);
             } else {
@@ -228,9 +240,11 @@ fn duration<'gc>(
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 6 {
+    if activation.swf_version() >= 6 {
         if let Some(sound_object) = this.as_sound_object() {
-            return Ok(sound_object.duration().into());
+            return Ok(sound_object
+                .duration()
+                .map_or(Value::Undefined, |d| d.into()));
         } else {
             avm_warn!(activation, "Sound.duration: this is not a Sound");
         }
@@ -244,7 +258,7 @@ fn get_bytes_loaded<'gc>(
     _this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 6 {
+    if activation.swf_version() >= 6 {
         avm_warn!(activation, "Sound.getBytesLoaded: Unimplemented");
         Ok(1.into())
     } else {
@@ -257,7 +271,7 @@ fn get_bytes_total<'gc>(
     _this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 6 {
+    if activation.swf_version() >= 6 {
         avm_warn!(activation, "Sound.getBytesTotal: Unimplemented");
         Ok(1.into())
     } else {
@@ -336,7 +350,7 @@ fn id3<'gc>(
     _this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 6 {
+    if activation.swf_version() >= 6 {
         avm_warn!(activation, "Sound.id3: Unimplemented");
     }
     Ok(Value::Undefined)
@@ -347,7 +361,7 @@ fn load_sound<'gc>(
     _this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 6 {
+    if activation.swf_version() >= 6 {
         avm_warn!(activation, "Sound.loadSound: Unimplemented");
     }
     Ok(Value::Undefined)
@@ -358,7 +372,7 @@ fn position<'gc>(
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 6 {
+    if activation.swf_version() >= 6 {
         if let Some(sound_object) = this.as_sound_object() {
             // TODO: The position is "sticky"; even if the sound is no longer playing, it should return
             // the previous valid position.
@@ -525,8 +539,8 @@ fn stop<'gc>(
             let name = name.coerce_to_string(activation)?;
             let movie = sound
                 .owner()
-                .or_else(|| activation.context.levels.get(&0).copied())
-                .and_then(|o| o.movie());
+                .unwrap_or_else(|| activation.context.stage.root_clip())
+                .movie();
             if let Some(movie) = movie {
                 if let Some(Character::Sound(sound)) = activation
                     .context

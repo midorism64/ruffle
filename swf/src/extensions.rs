@@ -6,9 +6,15 @@ use std::io::{self, Read};
 pub trait ReadSwfExt<'a> {
     fn as_mut_slice(&mut self) -> &mut &'a [u8];
 
+    fn as_slice(&self) -> &'a [u8];
+
+    fn pos(&self, data: &[u8]) -> usize {
+        self.as_slice().as_ptr() as usize - data.as_ptr() as usize
+    }
+
     // TODO: Make this fallible?
     fn seek(&mut self, data: &'a [u8], relative_offset: isize) {
-        let mut pos = self.as_mut_slice().as_ptr() as usize - data.as_ptr() as usize;
+        let mut pos = self.pos(data);
         pos = (pos as isize + relative_offset) as usize;
         pos = pos.min(data.len());
         *self.as_mut_slice() = &data[pos..];
@@ -61,21 +67,21 @@ pub trait ReadSwfExt<'a> {
 
     #[inline]
     fn read_fixed8(&mut self) -> Result<f32> {
-        ReadSwfExt::read_i16(self).map(|n| f32::from(n) / 256f32)
+        Ok((self.read_i16()? as f32) / 256.0)
     }
 
     #[inline]
     fn read_fixed16(&mut self) -> Result<f64> {
-        ReadSwfExt::read_i32(self).map(|n| f64::from(n) / 65536f64)
+        Ok((self.read_i32()? as f64) / 65536.0)
     }
 
     #[inline]
     fn read_encoded_u32(&mut self) -> Result<u32> {
-        let mut val = 0u32;
-        for i in 0..5 {
-            let byte = ReadSwfExt::read_u8(self)?;
-            val |= u32::from(byte & 0b01111111) << (i * 7);
-            if byte & 0b10000000 == 0 {
+        let mut val: u32 = 0;
+        for i in (0..35).step_by(7) {
+            let byte = self.read_u8()? as u32;
+            val |= (byte & 0b0111_1111) << i;
+            if byte & 0b1000_0000 == 0 {
                 break;
             }
         }

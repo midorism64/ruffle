@@ -33,7 +33,7 @@ use ruffle_core::tag_utils::SwfMovie;
 use ruffle_render_wgpu::clap::{GraphicsBackend, PowerPreference};
 use std::io::Read;
 use std::rc::Rc;
-use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
     ElementState, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
 };
@@ -71,6 +71,14 @@ struct Opt {
     /// whereas a low power usage tends prefer integrated GPUs.
     #[clap(long, short, case_insensitive = true, default_value = "high", arg_enum)]
     power: PowerPreference,
+
+    /// Width of window in pixels
+    #[clap(long, display_order = 1)]
+    width: Option<f64>,
+
+    /// Height of window in pixels
+    #[clap(long, display_order = 2)]
+    height: Option<f64>,
 
     /// Location to store a wgpu trace output
     #[clap(long, parse(from_os_str))]
@@ -142,7 +150,7 @@ fn load_movie_from_path(
 ) -> Result<SwfMovie, Box<dyn std::error::Error>> {
     if movie_url.scheme() == "file" {
         if let Ok(path) = movie_url.to_file_path() {
-            return SwfMovie::from_path(path);
+            return SwfMovie::from_path(path, None);
         }
     }
     let proxy = proxy.and_then(|url| url.as_str().parse().ok());
@@ -154,20 +162,19 @@ fn load_movie_from_path(
     let mut buffer: Vec<u8> = Vec::new();
     res.into_body().read_to_end(&mut buffer)?;
 
-    SwfMovie::from_data(&buffer, Some(movie_url.to_string()))
+    SwfMovie::from_data(&buffer, Some(movie_url.to_string()), None)
 }
 
 fn set_movie_parameters(movie: &mut SwfMovie, parameters: &[String]) {
-    for parameter in parameters {
+    let parameters = parameters.iter().map(|parameter| {
         let mut split = parameter.splitn(2, '=');
         if let (Some(key), Some(value)) = (split.next(), split.next()) {
-            movie.parameters_mut().insert(key, value.to_string(), true);
+            (key.to_owned(), value.to_owned())
         } else {
-            movie
-                .parameters_mut()
-                .insert(&parameter, "".to_string(), true);
+            (parameter.clone(), "".to_string())
         }
-    }
+    });
+    movie.append_parameters(parameters)
 }
 
 fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
@@ -200,7 +207,6 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut movie = load_movie_from_path(movie_url.to_owned(), opt.proxy.as_ref())?;
     set_movie_parameters(&mut movie, &opt.parameters);
-    let movie_size = LogicalSize::new(movie.width(), movie.height());
 
     let icon_bytes = include_bytes!("../assets/favicon-32.rgba");
     let icon = Icon::from_rgba(icon_bytes.to_vec(), 32, 32)?;
@@ -217,8 +223,22 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
             .with_max_inner_size(LogicalSize::new(i16::MAX, i16::MAX))
             .build(&event_loop)?,
     );
-    window.set_inner_size(movie_size);
+
+    let movie_size = LogicalSize::new(movie.width(), movie.height())
+        .cast::<f64>()
+        .to_physical(window.scale_factor());
+    let window_width = opt
+        .width
+        .unwrap_or(movie_size.width * (opt.height.unwrap_or(movie_size.height) / movie_size.height))
+        .max(1.0);
+    let window_height = opt
+        .height
+        .unwrap_or(movie_size.height * (opt.width.unwrap_or(movie_size.width) / movie_size.width))
+        .max(1.0);
+    let window_size = PhysicalSize::new(window_width, window_height);
+    window.set_inner_size(window_size);
     let viewport_size = window.inner_size();
+    let viewport_scale_factor = window.scale_factor();
 
     let renderer = Box::new(WgpuRenderBackend::for_window(
         window.as_ref(),
@@ -253,7 +273,11 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
         player.set_root_movie(Arc::new(movie));
         player.set_is_playing(true); // Desktop player will auto-play.
         player.set_letterbox(Letterbox::On);
-        player.set_viewport_dimensions(viewport_size.width, viewport_size.height);
+        player.set_viewport_dimensions(
+            viewport_size.width,
+            viewport_size.height,
+            viewport_scale_factor,
+        );
     }
 
     let mut mouse_pos = PhysicalPosition::new(0.0, 0.0);
@@ -300,8 +324,13 @@ fn run_player(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
                         // TODO: Change this when winit adds a `Window::minimzed` or `WindowEvent::Minimize`.
                         minimized = size.width == 0 && size.height == 0;
 
+                        let viewport_scale_factor = window.scale_factor();
                         let mut player_lock = player.lock().unwrap();
-                        player_lock.set_viewport_dimensions(size.width, size.height);
+                        player_lock.set_viewport_dimensions(
+                            size.width,
+                            size.height,
+                            viewport_scale_factor,
+                        );
                         player_lock
                             .renderer_mut()
                             .set_viewport_dimensions(size.width, size.height);
@@ -454,6 +483,7 @@ fn run_timedemo(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
 
     let viewport_width = 1920;
     let viewport_height = 1080;
+    let viewport_scale_factor = 1.0;
 
     let renderer = Box::new(WgpuRenderBackend::for_offscreen(
         (viewport_width, viewport_height),
@@ -473,10 +503,11 @@ fn run_timedemo(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
     player.lock().unwrap().set_root_movie(Arc::new(movie));
     player.lock().unwrap().set_is_playing(true);
 
-    player
-        .lock()
-        .unwrap()
-        .set_viewport_dimensions(viewport_width, viewport_height);
+    player.lock().unwrap().set_viewport_dimensions(
+        viewport_width,
+        viewport_height,
+        viewport_scale_factor,
+    );
 
     println!("Running {}...", opt.input_path.unwrap().to_string_lossy(),);
 

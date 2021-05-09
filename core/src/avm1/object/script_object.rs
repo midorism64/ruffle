@@ -2,8 +2,8 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, ExecutionReason, FunctionObject, NativeFunction};
 use crate::avm1::property::{Attribute, Property};
+use crate::avm1::property_map::{Entry, PropertyMap};
 use crate::avm1::{AvmString, Object, ObjectPtr, TObject, Value};
-use crate::property_map::{Entry, PropertyMap};
 use core::fmt;
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::borrow::Cow;
@@ -36,7 +36,6 @@ impl<'gc> Watcher<'gc> {
     pub fn call(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-
         name: &str,
         old_value: Value<'gc>,
         new_value: Value<'gc>,
@@ -75,7 +74,7 @@ pub struct ScriptObject<'gc>(GcCell<'gc, ScriptObjectData<'gc>>);
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct ScriptObjectData<'gc> {
-    prototype: Option<Object<'gc>>,
+    prototype: Value<'gc>,
     values: PropertyMap<Property<'gc>>,
     interfaces: Vec<Object<'gc>>,
     type_of: &'static str,
@@ -102,7 +101,7 @@ impl<'gc> ScriptObject<'gc> {
         ScriptObject(GcCell::allocate(
             gc_context,
             ScriptObjectData {
-                prototype: proto,
+                prototype: proto.map_or(Value::Undefined, Value::Object),
                 type_of: TYPE_OF_OBJECT,
                 values: PropertyMap::new(),
                 array: ArrayStorage::Properties { length: 0 },
@@ -119,7 +118,7 @@ impl<'gc> ScriptObject<'gc> {
         let object = ScriptObject(GcCell::allocate(
             gc_context,
             ScriptObjectData {
-                prototype: proto,
+                prototype: proto.map_or(Value::Undefined, Value::Object),
                 type_of: TYPE_OF_OBJECT,
                 values: PropertyMap::new(),
                 array: ArrayStorage::Vector(Vec::new()),
@@ -139,7 +138,7 @@ impl<'gc> ScriptObject<'gc> {
         ScriptObject(GcCell::allocate(
             gc_context,
             ScriptObjectData {
-                prototype: proto,
+                prototype: proto.map_or(Value::Undefined, Value::Object),
                 type_of: TYPE_OF_OBJECT,
                 values: PropertyMap::new(),
                 array: ArrayStorage::Properties { length: 0 },
@@ -159,7 +158,7 @@ impl<'gc> ScriptObject<'gc> {
         ScriptObject(GcCell::allocate(
             gc_context,
             ScriptObjectData {
-                prototype: None,
+                prototype: Value::Undefined,
                 type_of: TYPE_OF_OBJECT,
                 values: PropertyMap::new(),
                 array: ArrayStorage::Properties { length: 0 },
@@ -248,8 +247,7 @@ impl<'gc> ScriptObject<'gc> {
         base_proto: Option<Object<'gc>>,
     ) -> Result<(), Error<'gc>> {
         if name == "__proto__" {
-            self.0.write(activation.context.gc_context).prototype =
-                Some(value.coerce_to_object(activation));
+            self.0.write(activation.context.gc_context).prototype = value;
         } else if let Ok(index) = name.parse::<usize>() {
             self.set_array_element(index, value.to_owned(), activation.context.gc_context);
         } else if !name.is_empty() {
@@ -276,8 +274,8 @@ impl<'gc> ScriptObject<'gc> {
             let mut worked = false;
 
             if is_vacant {
-                let mut proto: Option<Object<'gc>> = Some((*self).into());
-                while let Some(this_proto) = proto {
+                let mut proto: Value<'gc> = (*self).into();
+                while let Value::Object(this_proto) = proto {
                     if this_proto.has_own_virtual(activation, name) {
                         break;
                     }
@@ -285,7 +283,7 @@ impl<'gc> ScriptObject<'gc> {
                     proto = this_proto.proto();
                 }
 
-                if let Some(this_proto) = proto {
+                if let Value::Object(this_proto) = proto {
                     worked = true;
                     if let Some(rval) = this_proto.call_setter(name, value, activation) {
                         if let Some(exec) = rval.as_executable() {
@@ -382,7 +380,7 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         this: Object<'gc>,
     ) -> Result<Value<'gc>, Error<'gc>> {
         if name == "__proto__" {
-            return Ok(self.proto().map_or(Value::Undefined, Value::Object));
+            return Ok(self.proto());
         }
 
         let mut getter = None;
@@ -475,7 +473,6 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         }
     }
 
-    #[allow(clippy::new_ret_no_self)]
     fn create_bare_object(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -611,21 +608,22 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         }
     }
 
-    fn proto(&self) -> Option<Object<'gc>> {
+    fn proto(&self) -> Value<'gc> {
         self.0.read().prototype
     }
 
-    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Option<Object<'gc>>) {
+    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
         self.0.write(gc_context).prototype = prototype;
     }
 
     /// Checks if the object has a given named property.
     fn has_property(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
         self.has_own_property(activation, name)
-            || self
-                .proto()
-                .as_ref()
-                .map_or(false, |p| p.has_property(activation, name))
+            || if let Value::Object(proto) = self.proto() {
+                proto.has_property(activation, name)
+            } else {
+                false
+            }
     }
 
     /// Checks if the object has a given named property on itself (and not,
@@ -669,9 +667,11 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
 
     /// Enumerate the object.
     fn get_keys(&self, activation: &mut Activation<'_, 'gc, '_>) -> Vec<String> {
-        let proto_keys = self
-            .proto()
-            .map_or_else(Vec::new, |p| p.get_keys(activation));
+        let proto_keys = if let Value::Object(proto) = self.proto() {
+            proto.get_keys(activation)
+        } else {
+            Vec::new()
+        };
         let mut out_keys = vec![];
         let object = self.0.read();
 
@@ -836,7 +836,7 @@ mod tests {
     use crate::backend::ui::NullUiBackend;
     use crate::backend::video::NullVideoBackend;
     use crate::context::UpdateContext;
-    use crate::display_object::MovieClip;
+    use crate::display_object::{MovieClip, Stage};
     use crate::focus_tracker::FocusTracker;
     use crate::library::Library;
     use crate::loader::LoadManager;
@@ -846,7 +846,7 @@ mod tests {
     use gc_arena::rootless_arena;
     use instant::Instant;
     use rand::{rngs::SmallRng, SeedableRng};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -861,8 +861,9 @@ mod tests {
             let root: DisplayObject<'_> =
                 MovieClip::new(SwfSlice::empty(swf.clone()), gc_context).into();
             root.set_depth(gc_context, 0);
-            let mut levels = BTreeMap::new();
-            levels.insert(0, root);
+
+            let stage = Stage::empty(gc_context, 550, 400);
+            let mut frame_rate = 12.0;
 
             let object = ScriptObject::object(gc_context, Some(avm1.prototypes().object)).into();
             let globals = avm1.global_object_cell();
@@ -871,13 +872,12 @@ mod tests {
                 gc_context,
                 player_version: 32,
                 swf: &swf,
-                levels: &mut levels,
+                stage,
                 rng: &mut SmallRng::from_seed([0u8; 32]),
                 action_queue: &mut crate::context::ActionQueue::new(),
                 audio: &mut NullAudioBackend::new(),
                 audio_manager: &mut AudioManager::new(),
                 ui: &mut NullUiBackend::new(),
-                background_color: &mut None,
                 library: &mut Library::empty(gc_context),
                 navigator: &mut NullNavigatorBackend::new(),
                 renderer: &mut NullRenderer::new(),
@@ -885,9 +885,8 @@ mod tests {
                 log: &mut NullLogBackend::new(),
                 video: &mut NullVideoBackend::new(),
                 mouse_hovered_object: None,
-                mouse_position: &(Twips::new(0), Twips::new(0)),
+                mouse_position: &(Twips::zero(), Twips::zero()),
                 drag_object: &mut None,
-                stage_size: (Twips::from_pixels(550.0), Twips::from_pixels(400.0)),
                 player: None,
                 load_manager: &mut LoadManager::new(),
                 system: &mut SystemProperties::default(),
@@ -896,6 +895,7 @@ mod tests {
                 shared_objects: &mut HashMap::new(),
                 unbound_text_fields: &mut Vec::new(),
                 timers: &mut Timers::new(),
+                current_context_menu: &mut None,
                 needs_render: &mut false,
                 avm1: &mut avm1,
                 avm2: &mut avm2,
@@ -905,19 +905,20 @@ mod tests {
                 focus_tracker: FocusTracker::new(gc_context),
                 times_get_time_called: 0,
                 time_offset: &mut 0,
+                frame_rate: &mut frame_rate,
             };
+            context.stage.replace_at_depth(&mut context, root, 0);
 
             root.post_instantiation(&mut context, root, None, Instantiator::Movie, false);
             root.set_name(context.gc_context, "");
 
-            let base_clip = *context.levels.get(&0).unwrap();
             let swf_version = context.swf.version();
             let mut activation = Activation::from_nothing(
                 context,
                 ActivationIdentifier::root("[Test]"),
                 swf_version,
                 globals,
-                base_clip,
+                root,
             );
 
             test(&mut activation, object)
@@ -989,7 +990,7 @@ mod tests {
                 Attribute::DONT_DELETE,
             );
 
-            assert_eq!(object.delete(activation, "test"), false);
+            assert!(!object.delete(activation, "test"));
             assert_eq!(object.get("test", activation).unwrap(), "initial".into());
 
             object
@@ -998,7 +999,7 @@ mod tests {
                 .set("test", "replaced".into(), activation)
                 .unwrap();
 
-            assert_eq!(object.delete(activation, "test"), false);
+            assert!(!object.delete(activation, "test"));
             assert_eq!(object.get("test", activation).unwrap(), "replaced".into());
         })
     }
@@ -1066,11 +1067,11 @@ mod tests {
                 Attribute::DONT_DELETE,
             );
 
-            assert_eq!(object.delete(activation, "virtual"), true);
-            assert_eq!(object.delete(activation, "virtual_un"), false);
-            assert_eq!(object.delete(activation, "stored"), true);
-            assert_eq!(object.delete(activation, "stored_un"), false);
-            assert_eq!(object.delete(activation, "non_existent"), false);
+            assert!(object.delete(activation, "virtual"));
+            assert!(!object.delete(activation, "virtual_un"));
+            assert!(object.delete(activation, "stored"));
+            assert!(!object.delete(activation, "stored_un"));
+            assert!(!object.delete(activation, "non_existent"));
 
             assert_eq!(object.get("virtual", activation).unwrap(), Value::Undefined);
             assert_eq!(
@@ -1124,10 +1125,10 @@ mod tests {
 
             let keys: Vec<_> = object.get_keys(activation);
             assert_eq!(keys.len(), 2);
-            assert_eq!(keys.contains(&"stored".to_string()), true);
-            assert_eq!(keys.contains(&"stored_hidden".to_string()), false);
-            assert_eq!(keys.contains(&"virtual".to_string()), true);
-            assert_eq!(keys.contains(&"virtual_hidden".to_string()), false);
+            assert!(keys.contains(&"stored".to_string()));
+            assert!(!keys.contains(&"stored_hidden".to_string()));
+            assert!(keys.contains(&"virtual".to_string()));
+            assert!(!keys.contains(&"virtual_hidden".to_string()));
         })
     }
 }

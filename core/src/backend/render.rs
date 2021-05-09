@@ -305,10 +305,10 @@ pub fn glue_tables_to_jpeg<'a>(
 pub fn remove_invalid_jpeg_data(mut data: &[u8]) -> std::borrow::Cow<[u8]> {
     // TODO: Might be better to return an Box<Iterator<Item=u8>> instead of a Cow here,
     // where the spliced iter is a data[..n].chain(data[n+4..])?
-    if data[..4] == [0xFF, 0xD9, 0xFF, 0xD8] {
+    if data.get(0..4) == Some(&[0xFF, 0xD9, 0xFF, 0xD8]) {
         data = &data[4..];
     }
-    if let Some(pos) = (0..data.len() - 4).find(|&n| data[n..n + 4] == [0xFF, 0xD9, 0xFF, 0xD8]) {
+    if let Some(pos) = data.windows(4).position(|w| w == [0xFF, 0xD9, 0xFF, 0xD8]) {
         let mut out_data = Vec::with_capacity(data.len() - 4);
         out_data.extend_from_slice(&data[..pos]);
         out_data.extend_from_slice(&data[pos + 4..]);
@@ -400,15 +400,20 @@ pub fn decode_define_bits_lossless(
     // Swizzle/de-palettize the bitmap.
     let out_data = match (swf_tag.version, swf_tag.format) {
         (1, swf::BitmapFormat::Rgb15) => {
-            let mut out_data: Vec<u8> = Vec::with_capacity(decoded_data.len() * 2);
+            let padded_width = (swf_tag.width + 0b1) & !0b1;
+            let mut out_data: Vec<u8> =
+                Vec::with_capacity(swf_tag.width as usize * swf_tag.height as usize * 4);
             let mut i = 0;
-            while i < decoded_data.len() {
-                let compressed: u16 = ((decoded_data[i] as u16) << 8) | decoded_data[i + 1] as u16;
-                out_data.push(rgb5_component(compressed, 10));
-                out_data.push(rgb5_component(compressed, 5));
-                out_data.push(rgb5_component(compressed, 0));
-                out_data.push(0xff);
-                i += 2;
+            for _ in 0..swf_tag.height {
+                for _ in 0..swf_tag.width {
+                    let compressed = ((decoded_data[i] as u16) << 8) | decoded_data[i + 1] as u16;
+                    out_data.push(rgb5_component(compressed, 10));
+                    out_data.push(rgb5_component(compressed, 5));
+                    out_data.push(rgb5_component(compressed, 0));
+                    out_data.push(0xff);
+                    i += 2;
+                }
+                i += (padded_width - swf_tag.width) as usize * 2;
             }
             out_data
         }

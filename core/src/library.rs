@@ -1,17 +1,18 @@
+use crate::avm1::function::FunctionObject;
+use crate::avm1::property_map::PropertyMap as Avm1PropertyMap;
+use crate::avm2::{Domain as Avm2Domain, Object as Avm2Object};
 use crate::backend::audio::SoundHandle;
 use crate::character::Character;
 use crate::display_object::{Bitmap, TDisplayObject};
 use crate::font::{Font, FontDescriptor};
 use crate::prelude::*;
-use crate::property_map::PropertyMap;
 use crate::tag_utils::{SwfMovie, SwfSlice};
 use crate::vminterface::AvmType;
-use crate::{avm1::function::FunctionObject, avm2::Domain as Avm2Domain};
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use swf::{CharacterId, TagCode};
-use weak_table::PtrWeakKeyHashMap;
+use weak_table::{traits::WeakElement, PtrWeakKeyHashMap, WeakValueHashMap};
 
 /// Boxed error alias.
 type Error = Box<dyn std::error::Error>;
@@ -21,14 +22,14 @@ type Error = Box<dyn std::error::Error>;
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct Avm1ConstructorRegistry<'gc> {
-    symbol_map: GcCell<'gc, PropertyMap<FunctionObject<'gc>>>,
+    symbol_map: GcCell<'gc, Avm1PropertyMap<FunctionObject<'gc>>>,
     is_case_sensitive: bool,
 }
 
 impl<'gc> Avm1ConstructorRegistry<'gc> {
     pub fn new(is_case_sensitive: bool, gc_context: MutationContext<'gc, '_>) -> Self {
         Self {
-            symbol_map: GcCell::allocate(gc_context, PropertyMap::new()),
+            symbol_map: GcCell::allocate(gc_context, Avm1PropertyMap::new()),
             is_case_sensitive,
         }
     }
@@ -55,16 +56,90 @@ impl<'gc> Avm1ConstructorRegistry<'gc> {
     }
 }
 
+#[derive(Clone)]
+struct MovieSymbol(Arc<SwfMovie>, CharacterId);
+
+#[derive(Clone)]
+struct WeakMovieSymbol(Weak<SwfMovie>, CharacterId);
+
+impl WeakElement for WeakMovieSymbol {
+    type Strong = MovieSymbol;
+
+    fn new(view: &Self::Strong) -> Self {
+        Self(Arc::downgrade(&view.0), view.1)
+    }
+
+    fn view(&self) -> Option<Self::Strong> {
+        if let Some(strong) = self.0.upgrade() {
+            Some(MovieSymbol(strong, self.1))
+        } else {
+            None
+        }
+    }
+}
+
+/// The mappings between constructors and library characters defined by
+/// `SymbolClass`.
+pub struct Avm2ConstructorRegistry<'gc> {
+    /// A list of AVM2 class constructors and the character IDs they are expected
+    /// to instantiate.
+    constr_map: WeakValueHashMap<Avm2Object<'gc>, WeakMovieSymbol>,
+}
+
+unsafe impl Collect for Avm2ConstructorRegistry<'_> {
+    fn trace(&self, cc: gc_arena::CollectionContext) {
+        for (k, _) in self.constr_map.iter() {
+            k.trace(cc);
+        }
+    }
+}
+
+impl Default for Avm2ConstructorRegistry<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'gc> Avm2ConstructorRegistry<'gc> {
+    pub fn new() -> Self {
+        Self {
+            constr_map: WeakValueHashMap::new(),
+        }
+    }
+
+    /// Retrieve the library symbol for a given AVM2 class constructor.
+    ///
+    /// A value of `None` indicates that this AVM2 class is not associated with
+    /// a library symbol.
+    pub fn constr_symbol(&self, proto: Avm2Object<'gc>) -> Option<(Arc<SwfMovie>, CharacterId)> {
+        match self.constr_map.get(&proto) {
+            Some(MovieSymbol(movie, symbol)) => Some((movie, symbol)),
+            None => None,
+        }
+    }
+
+    /// Associate an AVM2 class constructor with a given library symbol.
+    pub fn set_constr_symbol(
+        &mut self,
+        proto: Avm2Object<'gc>,
+        movie: Arc<SwfMovie>,
+        symbol: CharacterId,
+    ) {
+        self.constr_map.insert(proto, MovieSymbol(movie, symbol));
+    }
+}
+
 /// Symbol library for a single given SWF.
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct MovieLibrary<'gc> {
     characters: HashMap<CharacterId, Character<'gc>>,
-    export_characters: PropertyMap<Character<'gc>>,
+    export_characters: Avm1PropertyMap<Character<'gc>>,
     jpeg_tables: Option<Vec<u8>>,
     fonts: HashMap<FontDescriptor, Font<'gc>>,
     avm_type: AvmType,
     avm2_domain: Option<Avm2Domain<'gc>>,
+
     /// Shared reference to the constructor registry used for this movie.
     /// Should be `None` if this is an AVM2 movie.
     avm1_constructor_registry: Option<Gc<'gc, Avm1ConstructorRegistry<'gc>>>,
@@ -74,7 +149,7 @@ impl<'gc> MovieLibrary<'gc> {
     pub fn new(avm_type: AvmType) -> Self {
         MovieLibrary {
             characters: HashMap::new(),
-            export_characters: PropertyMap::new(),
+            export_characters: Avm1PropertyMap::new(),
             jpeg_tables: None,
             fonts: HashMap::new(),
             avm_type,
@@ -263,6 +338,15 @@ impl<'gc> MovieLibrary<'gc> {
         self.avm_type
     }
 
+    /// Forcibly set the AVM type of this movie.
+    ///
+    /// This is intended for display object types which can be created
+    /// dynamically but need a placeholder movie. You should *not* attempt to
+    /// change the AVM type of an actual SWF.
+    pub fn force_avm_type(&mut self, new_type: AvmType) {
+        self.avm_type = new_type;
+    }
+
     pub fn set_avm2_domain(&mut self, avm2_domain: Avm2Domain<'gc>) {
         self.avm2_domain = Some(avm2_domain);
     }
@@ -288,6 +372,10 @@ pub struct Library<'gc> {
 
     constructor_registry_case_insensitive: Gc<'gc, Avm1ConstructorRegistry<'gc>>,
     constructor_registry_case_sensitive: Gc<'gc, Avm1ConstructorRegistry<'gc>>,
+
+    /// A list of the symbols associated with specific AVM2 constructor
+    /// prototypes.
+    avm2_constructor_registry: Avm2ConstructorRegistry<'gc>,
 }
 
 unsafe impl<'gc> gc_arena::Collect for Library<'gc> {
@@ -299,6 +387,7 @@ unsafe impl<'gc> gc_arena::Collect for Library<'gc> {
         self.device_font.trace(cc);
         self.constructor_registry_case_insensitive.trace(cc);
         self.constructor_registry_case_sensitive.trace(cc);
+        self.avm2_constructor_registry.trace(cc);
     }
 }
 
@@ -315,6 +404,7 @@ impl<'gc> Library<'gc> {
                 gc_context,
                 Avm1ConstructorRegistry::new(true, gc_context),
             ),
+            avm2_constructor_registry: Default::default(),
         }
     }
 
@@ -382,5 +472,15 @@ impl<'gc> Library<'gc> {
         } else {
             self.constructor_registry_case_sensitive
         }
+    }
+
+    /// Get the AVM2 constructor registry.
+    pub fn avm2_constructor_registry(&self) -> &Avm2ConstructorRegistry<'gc> {
+        &self.avm2_constructor_registry
+    }
+
+    /// Mutate the AVM2 constructor registry.
+    pub fn avm2_constructor_registry_mut(&mut self) -> &mut Avm2ConstructorRegistry<'gc> {
+        &mut self.avm2_constructor_registry
     }
 }

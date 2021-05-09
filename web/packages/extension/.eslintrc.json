@@ -1,9 +1,0 @@
-{
-    "env": {
-        "browser": true,
-        "webextensions": true
-    },
-    "globals": {
-        "obfuscatedEventPrefix": true
-    }
-}

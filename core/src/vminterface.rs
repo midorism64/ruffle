@@ -87,6 +87,15 @@ impl From<AvmObject<'_>> for AvmType {
     }
 }
 
+impl AvmType {
+    pub fn into_avm2_loader_version(self) -> u32 {
+        match self {
+            AvmType::Avm1 => 2,
+            AvmType::Avm2 => 3,
+        }
+    }
+}
+
 /// A reference to either an AVM1 or AVM2 object.
 ///
 /// Used by non-AVM code to retain VM objects that may have been customized or
@@ -112,10 +121,7 @@ pub enum AvmObject<'gc> {
 impl<'gc> AvmObject<'gc> {
     /// Determine if this object is an AVM1 object.
     pub fn is_avm1_object(&self) -> bool {
-        match self {
-            Self::Avm1(_) => true,
-            Self::Avm2(_) => false,
-        }
+        matches!(self, Self::Avm1(_))
     }
 
     /// Attempt to access the AVM1 claim to this object, generating an error if
@@ -129,10 +135,7 @@ impl<'gc> AvmObject<'gc> {
 
     /// Determine if this object is an AVM2 object.
     pub fn is_avm2_object(&self) -> bool {
-        match self {
-            Self::Avm1(_) => false,
-            Self::Avm2(_) => true,
-        }
+        matches!(self, Self::Avm2(_))
     }
 
     /// Attempt to access the AVM2 claim to this object, generating an error if

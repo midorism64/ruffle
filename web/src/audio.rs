@@ -1,7 +1,7 @@
 use fnv::FnvHashMap;
 use generational_arena::Arena;
 use ruffle_core::backend::audio::{
-    decoders::{AdpcmDecoder, Mp3Decoder, NellymoserDecoder},
+    decoders::{AdpcmDecoder, NellymoserDecoder},
     swf::{self, AudioCompression},
     AudioBackend, PreloadStreamHandle, SoundHandle, SoundInstanceHandle, SoundTransform,
 };
@@ -446,11 +446,6 @@ impl WebAudioBackend {
                         std::io::Cursor::new(audio_data.to_vec()),
                         sound.format.is_stereo,
                         sound.format.sample_rate,
-                    )),
-                    AudioCompression::Mp3 => Box::new(Mp3Decoder::new(
-                        if sound.format.is_stereo { 2 } else { 1 },
-                        sound.format.sample_rate.into(),
-                        std::io::Cursor::new(audio_data.to_vec()), //&sound.data[..]
                     )),
                     AudioCompression::Nellymoser => Box::new(NellymoserDecoder::new(
                         std::io::Cursor::new(audio_data.to_vec()),
@@ -1029,9 +1024,10 @@ impl AudioBackend for WebAudioBackend {
 
     fn get_sound_duration(&self, sound: SoundHandle) -> Option<u32> {
         if let Some(sound) = self.sounds.get(sound) {
-            // AS duration does not subtract skip_sample_frames.
-            let num_sample_frames = u64::from(sound.num_sample_frames);
-            let ms = num_sample_frames * 1000 / u64::from(sound.format.sample_rate);
+            // AS duration does not subtract `skip_sample_frames`.
+            let num_sample_frames: f64 = sound.num_sample_frames.into();
+            let sample_rate: f64 = sound.format.sample_rate.into();
+            let ms = (num_sample_frames * 1000.0 / sample_rate).round();
             Some(ms as u32)
         } else {
             None

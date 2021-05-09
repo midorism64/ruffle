@@ -1,2 +1,0 @@
-getBytesLoaded(): 144
-getBytesTotal(): 144

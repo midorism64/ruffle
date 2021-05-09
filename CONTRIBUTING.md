@@ -52,12 +52,15 @@ Ruffle is a young project, and there is still much Flash functionality that is u
 
 ## Debugging ActionScript Content
 
-If you build Ruffle with `--features avm_debug` and enable debug logging (`RUST_LOG="warn,ruffle_core=debug"`) then you will
+If you build Ruffle with `--features avm_debug` and enable debug logging (`RUST_LOG="warn,ruffle_core=debug,avm_trace=trace"`) then you will
 activate a few built-in debugging utilities inside Ruffle, listed below.
 
 ### Warnings and Errors
 All AVM errors and warnings will print their stack trace so that you can view where they are in relation to the
 ActionScript inside the movie. This requires no extra configuration and will be visible by default.
+
+### Trace statements
+With `avm_trace=trace`, `trace()` statements will print to stderr.
 
 ### Step-By-Step Output
 If you use the hotkey `CTRL + ALT + D` you will toggle verbose AVM debugging output on and off (default off).
@@ -127,6 +130,24 @@ Specific warnings and clippy lints can be allowed when appropriate using attribu
 ```rs
 #[allow(clippy::float_cmp)]
 ```
+
+### Test Guidelines
+
+Heavily algorithmic code may benefit from unit tests in Rust: create a module `mod tests` conditionally compiled with `#[cfg(test)]`, and add your tests in there.
+
+Most tests are swf-based, with the swfs stored in `core/tests/swfs`. They are configured in `core/tests/regression_tests.rs`.
+
+To add a test here, create a .swf file that runs `trace()` statements. You can do this by:
+* creating a .fla file in a Flash authoring tool
+* creating a .as file in a text editor, and compiling it using a commandline compilation tool:
+    * [`mtasc`](http://web.archive.org/web/20210324063628/http://tech.motion-twin.com/mtasc.html) (ActionScript 2 only)
+        * if you create a file `test.as` with a `class Test` with a `static function main` with the code you want to run, you can compile it using `mtasc -main -header 200:150:30 test.as -swf test.swf`
+    * [`mxmlc`](https://helpx.adobe.com/air/kb/archived-air-sdk-version.html) (ActionScript 3 only)
+        * if you create a file `test.as`, you can compile it using `mxmlc test.as`. `mxmlc` is located in the `bin` folder of the downloadable AIR SDK.
+
+Run the .swf in Flash Player and create a file `output.txt` with the contents of the trace statements. Add the `output.txt`, `test.swf` and either the `test.as` or `test.fla` file to a directory under `core/tests/swfs/avm1` (or `avm2`) named after what your test tests, and add a line in `regression_tests.rs` to have Ruffle run it.
+
+Running `cargo test [your test]` will run the .swf in Ruffle and check the `trace()` output against `output.txt`.
 
 ## Commit Message Guidelines
 

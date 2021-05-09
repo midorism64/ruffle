@@ -3,7 +3,6 @@ use crate::avm2::class::{Class, ClassAttributes};
 use crate::avm2::method::Method;
 use crate::avm2::names::{Namespace, QName};
 use crate::avm2::object::Object;
-use crate::avm2::traits::Trait;
 use crate::avm2::value::Value;
 use crate::avm2::Error;
 use gc_arena::{GcCell, MutationContext};
@@ -35,19 +34,15 @@ pub fn create_class<'gc>(mc: MutationContext<'gc, '_>) -> GcCell<'gc, Class<'gc>
         mc,
     );
 
-    class
-        .write(mc)
-        .set_attributes(ClassAttributes::FINAL | ClassAttributes::SEALED);
-    class.write(mc).define_class_trait(Trait::from_const(
-        QName::new(Namespace::public(), "LITTLE_ENDIAN"),
-        QName::new(Namespace::public(), "String").into(),
-        Some("littleEndian".into()),
-    ));
+    let mut write = class.write(mc);
 
-    class.write(mc).define_class_trait(Trait::from_const(
-        QName::new(Namespace::public(), "BIG_ENDIAN"),
-        QName::new(Namespace::public(), "String").into(),
-        Some("bigEndian".into()),
-    ));
+    write.set_attributes(ClassAttributes::FINAL | ClassAttributes::SEALED);
+
+    const CONSTANTS: &[(&str, &str)] = &[
+        ("LITTLE_ENDIAN", "littleEndian"),
+        ("BIG_ENDIAN", "bigEndian"),
+    ];
+    write.define_public_constant_string_class_traits(CONSTANTS);
+
     class
 }

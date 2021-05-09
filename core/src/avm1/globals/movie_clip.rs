@@ -124,7 +124,7 @@ pub fn hit_test<'gc>(
         let y = args.get(1).unwrap().coerce_to_f64(activation)?;
         let shape = args
             .get(2)
-            .map(|v| v.as_bool(activation.current_swf_version()))
+            .map(|v| v.as_bool(activation.swf_version()))
             .unwrap_or(false);
         if x.is_finite() && y.is_finite() {
             // The docs say the point is in "Stage coordinates", but actually they are in root coordinates.
@@ -133,7 +133,14 @@ pub fn hit_test<'gc>(
                 .avm1_root(&activation.context)?
                 .local_to_global((Twips::from_pixels(x), Twips::from_pixels(y)));
             let ret = if shape {
-                movie_clip.hit_test_shape(&mut activation.context, point)
+                movie_clip.hit_test_shape(
+                    &mut activation.context,
+                    point,
+                    HitTestOptions {
+                        skip_mask: true,
+                        skip_invisible: false,
+                    },
+                )
             } else {
                 movie_clip.hit_test_bounds(point)
             };
@@ -248,12 +255,12 @@ fn attach_bitmap<'gc>(
                 let _pixel_snapping = args
                     .get(2)
                     .unwrap_or(&Value::Undefined)
-                    .as_bool(activation.current_swf_version());
+                    .as_bool(activation.swf_version());
 
                 let smoothing = args
                     .get(3)
                     .unwrap_or(&Value::Undefined)
-                    .as_bool(activation.current_swf_version());
+                    .as_bool(activation.swf_version());
 
                 if let Some(bitmap_handle) = bitmap_handle {
                     //TODO: do attached BitmapDatas have character ids?
@@ -301,7 +308,7 @@ fn line_style<'gc>(
         };
         let is_pixel_hinted = args
             .get(3)
-            .map_or(false, |v| v.as_bool(activation.current_swf_version()));
+            .map_or(false, |v| v.as_bool(activation.swf_version()));
         let (allow_scale_x, allow_scale_y) = match args
             .get(4)
             .and_then(|v| v.coerce_to_string(activation).ok())
@@ -336,9 +343,10 @@ fn line_style<'gc>(
             Some("bevel") => LineJoinStyle::Bevel,
             _ => LineJoinStyle::Round,
         };
-        movie_clip.set_line_style(
-            &mut activation.context,
-            Some(LineStyle {
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .set_line_style(Some(LineStyle {
                 width,
                 color,
                 start_cap: cap_style,
@@ -349,10 +357,12 @@ fn line_style<'gc>(
                 allow_scale_y,
                 is_pixel_hinted,
                 allow_close: false,
-            }),
-        );
+            }));
     } else {
-        movie_clip.set_line_style(&mut activation.context, None);
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .set_line_style(None);
     }
     Ok(Value::Undefined)
 }
@@ -371,12 +381,15 @@ fn begin_fill<'gc>(
         } as f32
             / 100.0
             * 255.0;
-        movie_clip.set_fill_style(
-            &mut activation.context,
-            Some(FillStyle::Color(Color::from_rgb(rgb, alpha as u8))),
-        );
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .set_fill_style(Some(FillStyle::Color(Color::from_rgb(rgb, alpha as u8))));
     } else {
-        movie_clip.set_fill_style(&mut activation.context, None);
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .set_fill_style(None);
     }
     Ok(Value::Undefined)
 }
@@ -461,9 +474,15 @@ fn begin_gradient_fill<'gc>(
                 return Ok(Value::Undefined);
             }
         };
-        movie_clip.set_fill_style(&mut activation.context, Some(style));
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .set_fill_style(Some(style));
     } else {
-        movie_clip.set_fill_style(&mut activation.context, None);
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .set_fill_style(None);
     }
     Ok(Value::Undefined)
 }
@@ -476,13 +495,13 @@ fn move_to<'gc>(
     if let (Some(x), Some(y)) = (args.get(0), args.get(1)) {
         let x = x.coerce_to_f64(activation)?;
         let y = y.coerce_to_f64(activation)?;
-        movie_clip.draw_command(
-            &mut activation.context,
-            DrawCommand::MoveTo {
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .draw_command(DrawCommand::MoveTo {
                 x: Twips::from_pixels(x),
                 y: Twips::from_pixels(y),
-            },
-        );
+            });
     }
     Ok(Value::Undefined)
 }
@@ -495,13 +514,13 @@ fn line_to<'gc>(
     if let (Some(x), Some(y)) = (args.get(0), args.get(1)) {
         let x = x.coerce_to_f64(activation)?;
         let y = y.coerce_to_f64(activation)?;
-        movie_clip.draw_command(
-            &mut activation.context,
-            DrawCommand::LineTo {
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .draw_command(DrawCommand::LineTo {
                 x: Twips::from_pixels(x),
                 y: Twips::from_pixels(y),
-            },
-        );
+            });
     }
     Ok(Value::Undefined)
 }
@@ -518,15 +537,15 @@ fn curve_to<'gc>(
         let y1 = y1.coerce_to_f64(activation)?;
         let x2 = x2.coerce_to_f64(activation)?;
         let y2 = y2.coerce_to_f64(activation)?;
-        movie_clip.draw_command(
-            &mut activation.context,
-            DrawCommand::CurveTo {
+        movie_clip
+            .as_drawing(activation.context.gc_context)
+            .unwrap()
+            .draw_command(DrawCommand::CurveTo {
                 x1: Twips::from_pixels(x1),
                 y1: Twips::from_pixels(y1),
                 x2: Twips::from_pixels(x2),
                 y2: Twips::from_pixels(y2),
-            },
-        );
+            });
     }
     Ok(Value::Undefined)
 }
@@ -536,7 +555,10 @@ fn end_fill<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    movie_clip.set_fill_style(&mut activation.context, None);
+    movie_clip
+        .as_drawing(activation.context.gc_context)
+        .unwrap()
+        .set_fill_style(None);
     Ok(Value::Undefined)
 }
 
@@ -545,7 +567,10 @@ fn clear<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    movie_clip.clear(&mut activation.context);
+    movie_clip
+        .as_drawing(activation.context.gc_context)
+        .unwrap()
+        .clear();
     Ok(Value::Undefined)
 }
 
@@ -699,7 +724,7 @@ fn create_text_field<'gc>(
         false,
     );
 
-    if activation.current_swf_version() >= 8 {
+    if activation.swf_version() >= 8 {
         //SWF8+ returns the `TextField` instance here
         Ok(text_field.object())
     } else {
@@ -799,10 +824,15 @@ fn get_bytes_loaded<'gc>(
     _activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    Ok(movie_clip
-        .movie()
-        .map(|mv| (mv.header().uncompressed_length).into())
-        .unwrap_or(Value::Undefined))
+    let bytes_loaded = if movie_clip.is_swf() {
+        movie_clip
+            .movie()
+            .map(|mv| mv.header().uncompressed_length)
+            .unwrap_or_default()
+    } else {
+        movie_clip.tag_stream_len() as u32
+    };
+    Ok(bytes_loaded.into())
 }
 
 fn get_bytes_total<'gc>(
@@ -810,10 +840,17 @@ fn get_bytes_total<'gc>(
     _activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    Ok(movie_clip
-        .movie()
-        .map(|mv| (mv.header().uncompressed_length).into())
-        .unwrap_or(Value::Undefined))
+    // For a loaded SWF, returns the uncompressed size of the SWF.
+    // Otherwise, returns the size of the tag list in the clip's DefineSprite tag.
+    let bytes_total = if movie_clip.is_swf() {
+        movie_clip
+            .movie()
+            .map(|mv| mv.header().uncompressed_length)
+            .unwrap_or_default()
+    } else {
+        movie_clip.tag_stream_len() as u32
+    };
+    Ok(bytes_total.into())
 }
 
 fn get_instance_at_depth<'gc>(
@@ -821,7 +858,7 @@ fn get_instance_at_depth<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 7 {
+    if activation.swf_version() >= 7 {
         let depth = if let Some(depth) = args.get(0) {
             depth
                 .coerce_to_i32(activation)?
@@ -856,10 +893,10 @@ fn get_next_highest_depth<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    if activation.current_swf_version() >= 7 {
+    if activation.swf_version() >= 7 {
         let depth = std::cmp::max(
             movie_clip
-                .highest_depth()
+                .highest_depth(Depth::MAX)
                 .unwrap_or(0)
                 .wrapping_sub(AVM_DEPTH_BIAS - 1),
             0,
@@ -986,7 +1023,7 @@ fn set_mask<'gc>(
 ) -> Result<Value<'gc>, Error<'gc>> {
     let mask = args
         .get(0)
-        .unwrap()
+        .unwrap_or(&Value::Undefined)
         .coerce_to_object(activation)
         .as_display_object();
     let mc = DisplayObject::MovieClip(movie_clip);
@@ -1175,7 +1212,6 @@ fn get_rect<'gc>(
 pub fn get_url<'gc>(
     _movie_clip: MovieClip<'gc>,
     activation: &mut Activation<'_, 'gc, '_>,
-
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     use crate::avm1::fscommand;
@@ -1261,6 +1297,7 @@ fn load_movie<'gc>(
         fetch,
         url.to_string(),
         None,
+        None,
     );
 
     activation.context.navigator.spawn_future(process);
@@ -1333,7 +1370,7 @@ fn set_enabled<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let enabled = value.as_bool(activation.current_swf_version());
+    let enabled = value.as_bool(activation.swf_version());
     this.set_enabled(&mut activation.context, enabled);
     Ok(())
 }
@@ -1351,7 +1388,7 @@ fn set_focus_enabled<'gc>(
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
     this.set_focusable(
-        value.as_bool(activation.current_swf_version()),
+        value.as_bool(activation.swf_version()),
         &mut activation.context,
     );
     Ok(())
@@ -1369,7 +1406,7 @@ fn set_lock_root<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let lock_root = value.as_bool(activation.current_swf_version());
+    let lock_root = value.as_bool(activation.swf_version());
     this.set_lock_root(activation.context.gc_context, lock_root);
     Ok(())
 }
@@ -1386,7 +1423,7 @@ fn set_use_hand_cursor<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let use_hand_cursor = value.as_bool(activation.current_swf_version());
+    let use_hand_cursor = value.as_bool(activation.swf_version());
     this.set_use_hand_cursor(&mut activation.context, use_hand_cursor);
     Ok(())
 }

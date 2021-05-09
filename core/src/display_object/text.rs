@@ -83,7 +83,7 @@ impl<'gc> TDisplayObject<'gc> for Text<'gc> {
             a: 0,
         };
         let mut font_id = 0;
-        let mut height = Twips::new(0);
+        let mut height = Twips::zero();
         let mut transform: Transform = Default::default();
         for block in &tf.static_data.text_blocks {
             if let Some(x) = block.x_offset {
@@ -104,10 +104,7 @@ impl<'gc> TDisplayObject<'gc> for Text<'gc> {
                 let scale = (height.get() as f32) / font.scale();
                 transform.matrix.a = scale;
                 transform.matrix.d = scale;
-                transform.color_transform.r_mult = f32::from(color.r) / 255.0;
-                transform.color_transform.g_mult = f32::from(color.g) / 255.0;
-                transform.color_transform.b_mult = f32::from(color.b) / 255.0;
-                transform.color_transform.a_mult = f32::from(color.a) / 255.0;
+                transform.color_transform.set_mult_color(&color);
                 for c in &block.glyphs {
                     if let Some(glyph) = font.get_glyph(c.index as usize) {
                         context.transform_stack.push(&transform);
@@ -131,6 +128,7 @@ impl<'gc> TDisplayObject<'gc> for Text<'gc> {
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
         mut point: (Twips, Twips),
+        _options: HitTestOptions,
     ) -> bool {
         if self.world_bounds().contains(point) {
             // Texts using the "Advanced text rendering" always hit test using their bounding box.
@@ -146,7 +144,7 @@ impl<'gc> TDisplayObject<'gc> for Text<'gc> {
             point = text_matrix * local_matrix * point;
 
             let mut font_id = 0;
-            let mut height = Twips::new(0);
+            let mut height = Twips::zero();
             let mut glyph_matrix = Matrix::default();
             for block in &tf.static_data.text_blocks {
                 if let Some(x) = block.x_offset {

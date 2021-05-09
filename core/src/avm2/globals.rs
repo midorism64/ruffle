@@ -103,6 +103,13 @@ pub struct SystemPrototypes<'gc> {
     pub xml_list: Object<'gc>,
     pub display_object: Object<'gc>,
     pub shape: Object<'gc>,
+    pub point: Object<'gc>,
+    pub textfield: Object<'gc>,
+    pub textformat: Object<'gc>,
+    pub graphics: Object<'gc>,
+    pub loaderinfo: Object<'gc>,
+    pub bytearray: Object<'gc>,
+    pub stage: Object<'gc>,
 }
 
 impl<'gc> SystemPrototypes<'gc> {
@@ -141,6 +148,13 @@ impl<'gc> SystemPrototypes<'gc> {
             xml_list: empty,
             display_object: empty,
             shape: empty,
+            point: empty,
+            textfield: empty,
+            textformat: empty,
+            graphics: empty,
+            loaderinfo: empty,
+            bytearray: empty,
+            stage: empty,
         }
     }
 }
@@ -150,7 +164,7 @@ fn function<'gc>(
     mc: MutationContext<'gc, '_>,
     package: impl Into<AvmString<'gc>>,
     name: impl Into<AvmString<'gc>>,
-    nf: NativeMethod<'gc>,
+    nf: NativeMethod,
     fn_proto: Object<'gc>,
     mut domain: Domain<'gc>,
     script: Script<'gc>,
@@ -558,7 +572,13 @@ pub fn load_player_globals<'gc>(
         script,
     )?;
     // package `flash.utils`
-    class(
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .bytearray = class(
         activation,
         flash::utils::bytearray::create_class(mc),
         bytearray_deriver,
@@ -570,6 +590,16 @@ pub fn load_player_globals<'gc>(
         activation,
         flash::utils::endian::create_class(mc),
         implicit_deriver,
+        domain,
+        script,
+    )?;
+
+    function(
+        mc,
+        "flash.utils",
+        "getTimer",
+        flash::utils::get_timer,
+        fn_proto,
         domain,
         script,
     )?;
@@ -661,6 +691,123 @@ pub fn load_player_globals<'gc>(
         domain,
         script,
     )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .graphics = class(
+        activation,
+        flash::display::graphics::create_class(mc),
+        stage_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::jointstyle::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::linescalemode::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::capsstyle::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .loaderinfo = class(
+        activation,
+        flash::display::loaderinfo::create_class(mc),
+        flash::display::loaderinfo::loaderinfo_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::actionscriptversion::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::swfversion::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .stage = class(
+        activation,
+        flash::display::stage::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::stagescalemode::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::stagealign::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::stagedisplaystate::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::display::stagequality::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+
+    // package `flash.geom`
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .point = class(
+        activation,
+        flash::geom::point::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
 
     // package `flash.media`
     activation
@@ -672,6 +819,55 @@ pub fn load_player_globals<'gc>(
         .video = class(
         activation,
         flash::media::video::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+
+    // package `flash.text`
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .textfield = class(
+        activation,
+        flash::text::textfield::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    activation
+        .context
+        .avm2
+        .system_prototypes
+        .as_mut()
+        .unwrap()
+        .textformat = class(
+        activation,
+        flash::text::textformat::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::text::textfieldautosize::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::text::textformatalign::create_class(mc),
+        implicit_deriver,
+        domain,
+        script,
+    )?;
+    class(
+        activation,
+        flash::text::textfieldtype::create_class(mc),
         implicit_deriver,
         domain,
         script,

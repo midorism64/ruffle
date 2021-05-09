@@ -1,13 +1,20 @@
 //! `EditText` display object and support code.
 
-use crate::avm1::activation::{Activation, ActivationIdentifier};
-use crate::avm1::{Avm1, AvmString, Object, StageObject, TObject, Value};
+use crate::avm1::activation::{Activation as Avm1Activation, ActivationIdentifier};
+use crate::avm1::{
+    Avm1, AvmString, Object as Avm1Object, StageObject as Avm1StageObject, TObject as Avm1TObject,
+    Value as Avm1Value,
+};
+use crate::avm2::{
+    Activation as Avm2Activation, Namespace as Avm2Namespace, Object as Avm2Object,
+    QName as Avm2QName, StageObject as Avm2StageObject, TObject as Avm2TObject,
+};
 use crate::backend::ui::MouseCursor;
 use crate::context::{RenderContext, UpdateContext};
 use crate::display_object::{DisplayObjectBase, TDisplayObject};
 use crate::drawing::Drawing;
 use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult, KeyCode};
-use crate::font::{round_down_to_pixel, Glyph, TextRenderSettings};
+use crate::font::{Glyph, TextRenderSettings};
 use crate::html::{BoxBounds, FormatSpans, LayoutBox, LayoutContent, TextFormat};
 use crate::prelude::*;
 use crate::shape_utils::DrawCommand;
@@ -15,7 +22,7 @@ use crate::string_utils;
 use crate::tag_utils::SwfMovie;
 use crate::transform::Transform;
 use crate::types::{Degrees, Percent};
-use crate::vminterface::Instantiator;
+use crate::vminterface::{AvmObject, AvmType, Instantiator};
 use crate::xml::XmlDocument;
 use chrono::Utc;
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
@@ -126,13 +133,13 @@ pub struct EditTextData<'gc> {
     bounds: BoundingBox,
 
     /// The AVM1 object handle
-    object: Option<Object<'gc>>,
+    object: Option<AvmObject<'gc>>,
 
     /// The variable path that this text field is bound to (AVM1 only).
     variable: Option<String>,
 
     /// The display object that the variable binding is bound to.
-    bound_stage_object: Option<StageObject<'gc>>,
+    bound_stage_object: Option<Avm1StageObject<'gc>>,
 
     /// Whether this text field is firing is variable binding (to prevent infinite loops).
     firing_variable_binding: bool,
@@ -161,7 +168,7 @@ impl<'gc> EditText<'gc> {
         let is_editable = !swf_tag.is_read_only;
         let is_html = swf_tag.is_html;
         let document = XmlDocument::new(context.gc_context);
-        let text = swf_tag.initial_text.clone().unwrap_or_default();
+        let text = swf_tag.initial_text.unwrap_or_default();
         let default_format = TextFormat::from_swf_tag(swf_tag.clone(), swf_movie.clone(), context);
         let encoding = swf_movie.encoding();
 
@@ -596,10 +603,7 @@ impl<'gc> EditText<'gc> {
     /// `DisplayObject`.
     pub fn text_transform(self, color: swf::Color, baseline_adjustment: Twips) -> Transform {
         let mut transform: Transform = Default::default();
-        transform.color_transform.r_mult = f32::from(color.r) / 255.0;
-        transform.color_transform.g_mult = f32::from(color.g) / 255.0;
-        transform.color_transform.b_mult = f32::from(color.b) / 255.0;
-        transform.color_transform.a_mult = f32::from(color.a) / 255.0;
+        transform.color_transform.set_mult_color(&color);
 
         // TODO MIKE: This feels incorrect here but is necessary for correct vertical position;
         // the glyphs are rendered relative to the baseline. This should be taken into account either
@@ -635,7 +639,11 @@ impl<'gc> EditText<'gc> {
         }
     }
 
-    pub fn set_variable(self, variable: Option<String>, activation: &mut Activation<'_, 'gc, '_>) {
+    pub fn set_variable(
+        self,
+        variable: Option<String>,
+        activation: &mut Avm1Activation<'_, 'gc, '_>,
+    ) {
         // Clear previous binding.
         if let Some(stage_object) = self
             .0
@@ -702,11 +710,11 @@ impl<'gc> EditText<'gc> {
                 write.drawing.set_fill_style(None);
             }
             write.drawing.draw_command(DrawCommand::MoveTo {
-                x: Twips::new(0),
-                y: Twips::new(0),
+                x: Twips::zero(),
+                y: Twips::zero(),
             });
             write.drawing.draw_command(DrawCommand::LineTo {
-                x: Twips::new(0),
+                x: Twips::zero(),
                 y: bounds.y_max - bounds.y_min,
             });
             write.drawing.draw_command(DrawCommand::LineTo {
@@ -715,11 +723,11 @@ impl<'gc> EditText<'gc> {
             });
             write.drawing.draw_command(DrawCommand::LineTo {
                 x: bounds.x_max - bounds.x_min,
-                y: Twips::new(0),
+                y: Twips::zero(),
             });
             write.drawing.draw_command(DrawCommand::LineTo {
-                x: Twips::new(0),
-                y: Twips::new(0),
+                x: Twips::zero(),
+                y: Twips::zero(),
             });
         }
     }
@@ -809,8 +817,8 @@ impl<'gc> EditText<'gc> {
         let edit_text = self.0.read();
 
         (
-            round_down_to_pixel(edit_text.intrinsic_bounds.width()),
-            round_down_to_pixel(edit_text.intrinsic_bounds.height()),
+            edit_text.intrinsic_bounds.width(),
+            edit_text.intrinsic_bounds.height(),
         )
     }
 
@@ -880,16 +888,7 @@ impl<'gc> EditText<'gc> {
                             // Set text color to white
                             context.transform_stack.push(&Transform {
                                 matrix: transform.matrix,
-                                color_transform: ColorTransform {
-                                    r_mult: 1.0,
-                                    g_mult: 1.0,
-                                    b_mult: 1.0,
-                                    a_mult: 1.0,
-                                    r_add: 0.0,
-                                    g_add: 0.0,
-                                    b_add: 0.0,
-                                    a_add: 0.0,
-                                },
+                                color_transform: ColorTransform::default(),
                             });
                         }
                         _ => {
@@ -931,7 +930,8 @@ impl<'gc> EditText<'gc> {
         }
 
         if let Some(drawing) = lbox.as_renderable_drawing() {
-            drawing.render(context);
+            let movie = self.movie();
+            drawing.render(context, movie);
         }
 
         context.transform_stack.pop();
@@ -945,7 +945,7 @@ impl<'gc> EditText<'gc> {
     /// This is called when the text field is created, and, if the text field is in the unbound list, anytime a display object is created.
     pub fn try_bind_text_field_variable(
         self,
-        activation: &mut Activation<'_, 'gc, '_>,
+        activation: &mut Avm1Activation<'_, 'gc, '_>,
         set_initial_value: bool,
     ) -> bool {
         if let Some(var_path) = self.variable() {
@@ -974,7 +974,7 @@ impl<'gc> EditText<'gc> {
                             // If the property exists on the object, we overwrite the text with the property's value.
                             if object.has_property(activation, property) {
                                 let value = object.get(property, activation).unwrap();
-                                let _ = self.set_text(
+                                let _ = self.set_html_text(
                                     value
                                         .coerce_to_string(activation)
                                         .unwrap_or_default()
@@ -1026,7 +1026,7 @@ impl<'gc> EditText<'gc> {
 
     /// Propagates a text change to the bound display object.
     ///
-    pub fn propagate_text_binding(self, activation: &mut Activation<'_, 'gc, '_>) {
+    pub fn propagate_text_binding(self, activation: &mut Avm1Activation<'_, 'gc, '_>) {
         if !self.0.read().firing_variable_binding {
             self.0
                 .write(activation.context.gc_context)
@@ -1205,7 +1205,7 @@ impl<'gc> EditText<'gc> {
             if changed {
                 let globals = context.avm1.global_object_cell();
                 let swf_version = context.swf.header().version;
-                let mut activation = Activation::from_nothing(
+                let mut activation = Avm1Activation::from_nothing(
                     context.reborrow(),
                     ActivationIdentifier::root("[Propagate Text Binding]"),
                     swf_version,
@@ -1218,16 +1218,15 @@ impl<'gc> EditText<'gc> {
         }
     }
 
-    fn initialize_as_broadcaster(&self, activation: &mut Activation<'_, 'gc, '_>) {
-        let write = self.0.write(activation.context.gc_context);
-        if let Some(object) = write.object {
+    fn initialize_as_broadcaster(&self, activation: &mut Avm1Activation<'_, 'gc, '_>) {
+        if let Avm1Value::Object(object) = self.object() {
             activation.context.avm1.broadcaster_functions().initialize(
                 activation.context.gc_context,
                 object,
                 activation.context.avm1.prototypes().array,
             );
 
-            if let Ok(Value::Object(listeners)) = object.get("_listeners", activation) {
+            if let Ok(Avm1Value::Object(listeners)) = object.get("_listeners", activation) {
                 if listeners.length() == 0 {
                     // Add the TextField as its own listener to match Flash's behavior
                     // This makes it so that the TextField's handlers are called before other listeners'.
@@ -1242,9 +1241,8 @@ impl<'gc> EditText<'gc> {
         }
     }
 
-    fn on_changed(&self, activation: &mut Activation<'_, 'gc, '_>) {
-        let object = self.0.read().object;
-        if let Some(object) = object {
+    fn on_changed(&self, activation: &mut Avm1Activation<'_, 'gc, '_>) {
+        if let Avm1Value::Object(object) = self.object() {
             let _ = object.call_method(
                 "broadcastMessage",
                 &["onChanged".into(), object.into()],
@@ -1252,58 +1250,24 @@ impl<'gc> EditText<'gc> {
             );
         }
     }
-}
 
-impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
-    impl_display_object_sansbounds!(base);
-
-    fn id(&self) -> CharacterId {
-        self.0.read().static_data.text.id
-    }
-
-    fn movie(&self) -> Option<Arc<SwfMovie>> {
-        Some(self.0.read().static_data.swf.clone())
-    }
-
-    fn run_frame(&self, _context: &mut UpdateContext) {
-        // Noop
-    }
-
-    fn as_edit_text(&self) -> Option<EditText<'gc>> {
-        Some(*self)
-    }
-
-    fn post_instantiation(
+    /// Construct the text field's AVM1 representation.
+    fn construct_as_avm1_object(
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
         display_object: DisplayObject<'gc>,
-        _init_object: Option<Object<'gc>>,
-        _instantiated_by: Instantiator,
         run_frame: bool,
     ) {
-        self.set_default_instance_name(context);
-
         let mut text = self.0.write(context.gc_context);
         if text.object.is_none() {
-            let object = StageObject::for_display_object(
+            let object: Avm1Object<'gc> = Avm1StageObject::for_display_object(
                 context.gc_context,
                 display_object,
                 Some(context.avm1.prototypes().text_field),
             )
             .into();
 
-            text.object = Some(object);
-        }
-
-        text.document = text
-            .document
-            .as_node()
-            .duplicate(context.gc_context, true)
-            .document();
-
-        let mut new_layout = Vec::new();
-        for layout_box in text.layout.iter() {
-            new_layout.push(layout_box.duplicate(context.gc_context));
+            text.object = Some(object.into());
         }
         drop(text);
 
@@ -1328,12 +1292,117 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         }
     }
 
-    fn object(&self) -> Value<'gc> {
+    /// Construct the text field's AVM2 representation.
+    fn construct_as_avm2_object(
+        &self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        display_object: DisplayObject<'gc>,
+    ) {
+        let mut proto = context.avm2.prototypes().textfield;
+        let object: Avm2Object<'gc> =
+            Avm2StageObject::for_display_object(context.gc_context, display_object, proto).into();
+
+        let mut activation = Avm2Activation::from_nothing(context.reborrow());
+        let constr = proto
+            .get_property(
+                proto,
+                &Avm2QName::new(Avm2Namespace::public(), "constructor"),
+                &mut activation,
+            )
+            .unwrap()
+            .coerce_to_object(&mut activation)
+            .unwrap();
+
+        if let Err(e) = constr.call(Some(object), &[], &mut activation, Some(proto)) {
+            log::error!(
+                "Got {} when constructing AVM2 side of dynamic text field",
+                e
+            );
+        }
+
+        self.0.write(activation.context.gc_context).object = Some(object.into());
+    }
+}
+
+impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
+    impl_display_object_sansbounds!(base);
+
+    fn id(&self) -> CharacterId {
+        self.0.read().static_data.text.id
+    }
+
+    fn movie(&self) -> Option<Arc<SwfMovie>> {
+        Some(self.0.read().static_data.swf.clone())
+    }
+
+    /// Construct objects placed on this frame.
+    fn construct_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        if self.vm_type(context) == AvmType::Avm2 && matches!(self.object2(), Avm2Value::Undefined)
+        {
+            self.construct_as_avm2_object(context, (*self).into());
+        }
+    }
+
+    fn run_frame(&self, _context: &mut UpdateContext) {
+        // Noop
+    }
+
+    fn as_edit_text(&self) -> Option<EditText<'gc>> {
+        Some(*self)
+    }
+
+    fn post_instantiation(
+        &self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        display_object: DisplayObject<'gc>,
+        _init_object: Option<Avm1Object<'gc>>,
+        _instantiated_by: Instantiator,
+        run_frame: bool,
+    ) {
+        self.set_default_instance_name(context);
+
+        let mut text = self.0.write(context.gc_context);
+        text.document = text
+            .document
+            .as_node()
+            .duplicate(context.gc_context, true)
+            .document();
+
+        let mut new_layout = Vec::new();
+        for layout_box in text.layout.iter() {
+            new_layout.push(layout_box.duplicate(context.gc_context));
+        }
+        drop(text);
+
+        let movie = self.movie().unwrap();
+        let library = context.library.library_for_movie_mut(movie);
+        let vm_type = library.avm_type();
+
+        if vm_type == AvmType::Avm1 {
+            self.construct_as_avm1_object(context, display_object, run_frame);
+        }
+    }
+
+    fn object(&self) -> Avm1Value<'gc> {
         self.0
             .read()
             .object
-            .map(Value::from)
-            .unwrap_or(Value::Undefined)
+            .and_then(|o| o.as_avm1_object().ok())
+            .map(Avm1Value::from)
+            .unwrap_or(Avm1Value::Undefined)
+    }
+
+    fn object2(&self) -> Avm2Value<'gc> {
+        self.0
+            .read()
+            .object
+            .and_then(|o| o.as_avm2_object().ok())
+            .map(Avm2Value::from)
+            .unwrap_or(Avm2Value::Undefined)
+    }
+
+    fn set_object2(&mut self, mc: MutationContext<'gc, '_>, to: Avm2Object<'gc>) {
+        self.0.write(mc).object = Some(to.into());
     }
 
     fn self_bounds(&self) -> BoundingBox {
@@ -1405,10 +1474,12 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
     }
 
     fn render_self(&self, context: &mut RenderContext<'_, 'gc>) {
-        if !self.world_bounds().intersects(&context.view_bounds) {
+        if !self.world_bounds().intersects(&context.stage.view_bounds()) {
             // Off-screen; culled
             return;
         }
+
+        let movie = self.movie();
 
         let edit_text = self.0.read();
         context.transform_stack.push(&Transform {
@@ -1420,7 +1491,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             ..Default::default()
         });
 
-        edit_text.drawing.render(context);
+        edit_text.drawing.render(context, movie);
 
         context.renderer.push_mask();
         let mask = Matrix::create_box(
@@ -1512,7 +1583,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         }
 
         // Unregister any text fields that may be bound to *this* text field.
-        if let Value::Object(object) = self.object() {
+        if let Avm1Value::Object(object) = self.object() {
             if let Some(stage_object) = object.as_stage_object() {
                 stage_object.unregister_text_field_bindings(context);
             }
@@ -1533,7 +1604,17 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         point: (Twips, Twips),
     ) -> Option<DisplayObject<'gc>> {
         // The button is hovered if the mouse is over any child nodes.
-        if self.visible() && self.is_selectable() && self.hit_test_shape(context, point) {
+        if self.visible()
+            && self.is_selectable()
+            && self.hit_test_shape(
+                context,
+                point,
+                HitTestOptions {
+                    skip_mask: true,
+                    skip_invisible: true,
+                },
+            )
+        {
             Some(self_node)
         } else {
             None

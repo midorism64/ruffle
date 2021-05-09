@@ -6,6 +6,7 @@ use crate::avm1::property::Attribute;
 use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
 use crate::avm_error;
 use crate::display_object::{AutoSizeMode, EditText, TDisplayObject, TextSelection};
+use crate::font::round_down_to_pixel;
 use crate::html::TextFormat;
 use gc_arena::MutationContext;
 
@@ -156,8 +157,10 @@ pub fn set_password<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let current_swf_version = activation.current_swf_version();
-    this.set_password(value.as_bool(current_swf_version), &mut activation.context);
+    this.set_password(
+        value.as_bool(activation.swf_version()),
+        &mut activation.context,
+    );
     Ok(())
 }
 
@@ -340,8 +343,8 @@ pub fn set_html<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let current_swf_version = activation.current_swf_version();
-    this.set_is_html(&mut activation.context, value.as_bool(current_swf_version));
+    let value = value.as_bool(activation.swf_version());
+    this.set_is_html(&mut activation.context, value);
     Ok(())
 }
 
@@ -404,7 +407,7 @@ pub fn set_background<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let has_background = value.as_bool(activation.current_swf_version());
+    let has_background = value.as_bool(activation.swf_version());
     this.set_has_background(activation.context.gc_context, has_background);
     Ok(())
 }
@@ -438,7 +441,7 @@ pub fn set_border<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let has_border = value.as_bool(activation.current_swf_version());
+    let has_border = value.as_bool(activation.swf_version());
     this.set_has_border(activation.context.gc_context, has_border);
     Ok(())
 }
@@ -472,7 +475,7 @@ pub fn set_embed_fonts<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let embed_fonts = value.as_bool(activation.current_swf_version());
+    let embed_fonts = value.as_bool(activation.swf_version());
     this.set_is_device_font(&mut activation.context, !embed_fonts);
     Ok(())
 }
@@ -489,7 +492,7 @@ pub fn text_width<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
 ) -> Result<Value<'gc>, Error<'gc>> {
     let metrics = this.measure_text(&mut activation.context);
-    Ok(metrics.0.to_pixels().into())
+    Ok(round_down_to_pixel(metrics.0).to_pixels().into())
 }
 
 pub fn text_height<'gc>(
@@ -497,7 +500,7 @@ pub fn text_height<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
 ) -> Result<Value<'gc>, Error<'gc>> {
     let metrics = this.measure_text(&mut activation.context);
-    Ok(metrics.1.to_pixels().into())
+    Ok(round_down_to_pixel(metrics.1).to_pixels().into())
 }
 
 pub fn multiline<'gc>(
@@ -512,7 +515,7 @@ pub fn set_multiline<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let is_multiline = value.as_bool(activation.current_swf_version());
+    let is_multiline = value.as_bool(activation.swf_version());
     this.set_multiline(is_multiline, &mut activation.context);
     Ok(())
 }
@@ -529,7 +532,7 @@ pub fn set_selectable<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let set_selectable = value.as_bool(activation.current_swf_version());
+    let set_selectable = value.as_bool(activation.swf_version());
     this.set_selectable(set_selectable, &mut activation.context);
     Ok(())
 }
@@ -571,7 +574,7 @@ pub fn set_word_wrap<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     value: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    let is_word_wrap = value.as_bool(activation.current_swf_version());
+    let is_word_wrap = value.as_bool(activation.swf_version());
     this.set_word_wrap(is_word_wrap, &mut activation.context);
     Ok(())
 }

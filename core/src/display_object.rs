@@ -1,8 +1,11 @@
 use crate::avm1::{
     Error as Avm1Error, Object as Avm1Object, TObject as Avm1TObject, Value as Avm1Value,
 };
-use crate::avm2::{Avm2, Event as Avm2Event, TObject as Avm2TObject, Value as Avm2Value};
+use crate::avm2::{
+    Avm2, Event as Avm2Event, Object as Avm2Object, TObject as Avm2TObject, Value as Avm2Value,
+};
 use crate::context::{RenderContext, UpdateContext};
+use crate::drawing::Drawing;
 use crate::player::NEWEST_PLAYER_VERSION;
 use crate::prelude::*;
 use crate::tag_utils::SwfMovie;
@@ -13,9 +16,9 @@ use bitflags::bitflags;
 use gc_arena::{Collect, MutationContext};
 use ruffle_macros::enum_trait_object;
 use std::cell::{Ref, RefMut};
-use std::cmp::min;
 use std::fmt::Debug;
 use std::sync::Arc;
+use swf::Fixed8;
 
 mod bitmap;
 mod button;
@@ -24,6 +27,7 @@ mod edit_text;
 mod graphic;
 mod morph_shape;
 mod movie_clip;
+mod stage;
 mod text;
 mod video;
 
@@ -39,6 +43,7 @@ pub use edit_text::{AutoSizeMode, EditText, TextSelection};
 pub use graphic::Graphic;
 pub use morph_shape::{MorphShape, MorphShapeStatic};
 pub use movie_clip::{MovieClip, Scene};
+pub use stage::{Stage, StageAlign, StageScaleMode};
 pub use text::Text;
 pub use video::Video;
 
@@ -302,7 +307,7 @@ impl<'gc> DisplayObjectBase<'gc> {
 
     fn set_alpha(&mut self, value: f64) {
         self.set_transformed_by_script(true);
-        self.color_transform_mut().a_mult = value as f32
+        self.color_transform_mut().a_mult = Fixed8::from_f64(value)
     }
 
     fn clip_depth(&self) -> Depth {
@@ -313,7 +318,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.clip_depth = depth;
     }
 
-    fn parent(&self) -> Option<DisplayObject<'gc>> {
+    fn avm2_parent(&self) -> Option<DisplayObject<'gc>> {
         self.parent
     }
 
@@ -422,10 +427,44 @@ impl<'gc> DisplayObjectBase<'gc> {
     }
 }
 
+pub fn render_base<'gc>(this: DisplayObject<'gc>, context: &mut RenderContext<'_, 'gc>) {
+    if this.maskee().is_some() {
+        return;
+    }
+    context.transform_stack.push(&*this.transform());
+
+    let mask = this.masker();
+    let mut mask_transform = crate::transform::Transform::default();
+    if let Some(m) = mask {
+        mask_transform.matrix = this.global_to_local_matrix();
+        mask_transform.matrix *= m.local_to_global_matrix();
+        context.renderer.push_mask();
+        context.allow_mask = false;
+        context.transform_stack.push(&mask_transform);
+        m.render_self(context);
+        context.transform_stack.pop();
+        context.allow_mask = true;
+        context.renderer.activate_mask();
+    }
+    this.render_self(context);
+    if let Some(m) = mask {
+        context.renderer.deactivate_mask();
+        context.allow_mask = false;
+        context.transform_stack.push(&mask_transform);
+        m.render_self(context);
+        context.transform_stack.pop();
+        context.allow_mask = true;
+        context.renderer.pop_mask();
+    }
+
+    context.transform_stack.pop();
+}
+
 #[enum_trait_object(
     #[derive(Clone, Collect, Debug, Copy)]
     #[collect(no_drop)]
     pub enum DisplayObject<'gc> {
+        Stage(Stage<'gc>),
         Bitmap(Bitmap<'gc>),
         Button(Button<'gc>),
         EditText(EditText<'gc>),
@@ -604,10 +643,19 @@ pub trait TDisplayObject<'gc>:
         let rotation = self.rotation(gc_context);
         let cos = f64::abs(f64::cos(rotation.into_radians()));
         let sin = f64::abs(f64::sin(rotation.into_radians()));
-        let new_scale_x = aspect_ratio * (cos * target_scale_x + sin * target_scale_y)
+        let mut new_scale_x = aspect_ratio * (cos * target_scale_x + sin * target_scale_y)
             / ((cos + aspect_ratio * sin) * (aspect_ratio * cos + sin));
-        let new_scale_y =
+        let mut new_scale_y =
             (sin * prev_scale_x + aspect_ratio * cos * prev_scale_y) / (aspect_ratio * cos + sin);
+
+        if !new_scale_x.is_finite() {
+            new_scale_x = 0.0;
+        }
+
+        if !new_scale_y.is_finite() {
+            new_scale_y = 0.0;
+        }
+
         self.set_scale_x(gc_context, Percent::from_unit(new_scale_x));
         self.set_scale_y(gc_context, Percent::from_unit(new_scale_y));
     }
@@ -643,10 +691,19 @@ pub trait TDisplayObject<'gc>:
         let rotation = self.rotation(gc_context);
         let cos = f64::abs(f64::cos(rotation.into_radians()));
         let sin = f64::abs(f64::sin(rotation.into_radians()));
-        let new_scale_x =
+        let mut new_scale_x =
             (aspect_ratio * cos * prev_scale_x + sin * prev_scale_y) / (aspect_ratio * cos + sin);
-        let new_scale_y = aspect_ratio * (sin * target_scale_x + cos * target_scale_y)
+        let mut new_scale_y = aspect_ratio * (sin * target_scale_x + cos * target_scale_y)
             / ((cos + aspect_ratio * sin) * (aspect_ratio * cos + sin));
+
+        if !new_scale_x.is_finite() {
+            new_scale_x = 0.0;
+        }
+
+        if !new_scale_y.is_finite() {
+            new_scale_y = 0.0;
+        }
+
         self.set_scale_x(gc_context, Percent::from_unit(new_scale_x));
         self.set_scale_y(gc_context, Percent::from_unit(new_scale_y));
     }
@@ -707,8 +764,25 @@ pub trait TDisplayObject<'gc>:
 
     fn clip_depth(&self) -> Depth;
     fn set_clip_depth(&self, gc_context: MutationContext<'gc, '_>, depth: Depth);
-    fn parent(&self) -> Option<DisplayObject<'gc>>;
+
+    /// Retrieve the parent of this display object.
+    ///
+    /// This version of the function allows access to the `Stage`; which is
+    /// only suitable for code aware of AVM2's altered display list hierarchy.
+    /// For AVM1 code, please call `parent`.
+    fn avm2_parent(&self) -> Option<DisplayObject<'gc>>;
+
+    /// Set the parent of this display object.
     fn set_parent(&self, gc_context: MutationContext<'gc, '_>, parent: Option<DisplayObject<'gc>>);
+
+    /// Retrieve the parent of this display object.
+    ///
+    /// This version of the function disallows access to the `Stage`; if you
+    /// want to be able to access the stage, please call `avm2_parent`.
+    fn parent(&self) -> Option<DisplayObject<'gc>> {
+        self.avm2_parent().filter(|p| p.as_stage().is_none())
+    }
+
     fn prev_sibling(&self) -> Option<DisplayObject<'gc>>;
     fn set_prev_sibling(
         &self,
@@ -736,31 +810,6 @@ pub trait TDisplayObject<'gc>:
         remove_old_link: bool,
     );
 
-    /// Get another level by level name.
-    ///
-    /// Since levels don't have instance names, this function instead parses
-    /// their ID and uses that to retrieve the level.
-    fn get_level_by_path(
-        &self,
-        name: &str,
-        context: &mut UpdateContext<'_, 'gc, '_>,
-        case_sensitive: bool,
-    ) -> Option<DisplayObject<'gc>> {
-        if let Some(slice) = name.get(0..min(name.len(), 6)) {
-            let is_level = if case_sensitive {
-                slice == "_level"
-            } else {
-                slice.eq_ignore_ascii_case("_level")
-            };
-            if is_level {
-                if let Some(level_id) = name.get(6..).and_then(|v| v.parse::<u32>().ok()) {
-                    return context.levels.get(&level_id).copied();
-                }
-            }
-        }
-
-        None
-    }
     fn removed(&self) -> bool;
     fn set_removed(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
@@ -917,36 +966,7 @@ pub trait TDisplayObject<'gc>:
     fn render_self(&self, _context: &mut RenderContext<'_, 'gc>) {}
 
     fn render(&self, context: &mut RenderContext<'_, 'gc>) {
-        if self.maskee().is_some() {
-            return;
-        }
-        context.transform_stack.push(&*self.transform());
-
-        let mask = self.masker();
-        let mut mask_transform = crate::transform::Transform::default();
-        if let Some(m) = mask {
-            mask_transform.matrix = self.global_to_local_matrix();
-            mask_transform.matrix *= m.local_to_global_matrix();
-            context.renderer.push_mask();
-            context.allow_mask = false;
-            context.transform_stack.push(&mask_transform);
-            m.render_self(context);
-            context.transform_stack.pop();
-            context.allow_mask = true;
-            context.renderer.activate_mask();
-        }
-        self.render_self(context);
-        if let Some(m) = mask {
-            context.renderer.deactivate_mask();
-            context.allow_mask = false;
-            context.transform_stack.push(&mask_transform);
-            m.render_self(context);
-            context.transform_stack.pop();
-            context.allow_mask = true;
-            context.renderer.pop_mask();
-        }
-
-        context.transform_stack.pop();
+        render_base((*self).into(), context)
     }
 
     fn unload(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
@@ -973,6 +993,9 @@ pub trait TDisplayObject<'gc>:
         self.set_removed(context.gc_context, true);
     }
 
+    fn as_stage(&self) -> Option<Stage<'gc>> {
+        None
+    }
     fn as_button(&self) -> Option<Button<'gc>> {
         None
     }
@@ -989,6 +1012,9 @@ pub trait TDisplayObject<'gc>:
         None
     }
     fn as_video(self) -> Option<Video<'gc>> {
+        None
+    }
+    fn as_drawing(&self, _gc_context: MutationContext<'gc, '_>) -> Option<RefMut<'_, Drawing>> {
         None
     }
 
@@ -1075,6 +1101,8 @@ pub trait TDisplayObject<'gc>:
         Avm2Value::Undefined // todo: see above
     }
 
+    fn set_object2(&mut self, _mc: MutationContext<'gc, '_>, _to: Avm2Object<'gc>) {}
+
     /// Tests if a given stage position point intersects with the world bounds of this object.
     fn hit_test_bounds(&self, pos: (Twips, Twips)) -> bool {
         self.world_bounds().contains(pos)
@@ -1091,6 +1119,7 @@ pub trait TDisplayObject<'gc>:
         &self,
         _context: &mut UpdateContext<'_, 'gc, '_>,
         pos: (Twips, Twips),
+        _options: HitTestOptions,
     ) -> bool {
         // Default to using bounding box.
         self.hit_test_bounds(pos)
@@ -1155,8 +1184,8 @@ pub trait TDisplayObject<'gc>:
         MouseCursor::Hand
     }
 
-    /// Obtain the top-most parent of the display tree hierarchy, if a suitable
-    /// object exists.
+    /// Obtain the top-most non-Stage parent of the display tree hierarchy, if
+    /// a suitable object exists.
     fn root(&self, context: &UpdateContext<'_, 'gc, '_>) -> Option<DisplayObject<'gc>> {
         let mut parent = if self.lock_root() {
             None
@@ -1195,20 +1224,17 @@ pub trait TDisplayObject<'gc>:
 
     /// Determine if this display object is currently on the stage.
     fn is_on_stage(self, context: &UpdateContext<'_, 'gc, '_>) -> bool {
-        let mut ancestor = self.parent();
+        let mut ancestor = self.avm2_parent();
         while let Some(parent) = ancestor {
-            if parent.parent().is_some() {
-                ancestor = parent.parent();
+            if parent.avm2_parent().is_some() {
+                ancestor = parent.avm2_parent();
             } else {
                 break;
             }
         }
 
         let ancestor = ancestor.unwrap_or_else(|| self.into());
-        context
-            .levels
-            .values()
-            .any(|o| DisplayObject::ptr_eq(*o, ancestor))
+        DisplayObject::ptr_eq(ancestor, context.stage.into())
     }
 
     /// Obtain the top-most parent of the display tree hierarchy, or some kind
@@ -1239,9 +1265,14 @@ pub trait TDisplayObject<'gc>:
     /// The default root names change based on the AVM configuration of the
     /// clip; AVM2 clips get `rootN` while AVM1 clips get blank strings.
     fn set_default_root_name(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
-        if !matches!(self.object2(), Avm2Value::Undefined) {
+        let movie = self
+            .movie()
+            .expect("All roots should have an associated movie");
+        let vm_type = context.library.library_for_movie_mut(movie).avm_type();
+
+        if matches!(vm_type, AvmType::Avm2) {
             self.set_name(context.gc_context, &format!("root{}", self.depth() + 1));
-        } else if !matches!(self.object(), Avm1Value::Undefined) {
+        } else if matches!(vm_type, AvmType::Avm1) {
             self.set_name(context.gc_context, "");
         }
     }
@@ -1353,8 +1384,8 @@ macro_rules! impl_display_object_sansbounds {
         ) {
             self.0.write(context).$field.set_clip_depth(depth)
         }
-        fn parent(&self) -> Option<crate::display_object::DisplayObject<'gc>> {
-            self.0.read().$field.parent()
+        fn avm2_parent(&self) -> Option<crate::display_object::DisplayObject<'gc>> {
+            self.0.read().$field.avm2_parent()
         }
         fn set_parent(
             &self,
@@ -1556,6 +1587,17 @@ bitflags! {
         /// it becomes the _root of itself and of any children
         const LOCK_ROOT                = 1 << 6;
     }
+}
+
+/// Defines how hit testing should be performed.
+/// Used for mouse picking and ActionScript's hitTestClip functions.
+#[derive(Debug, Copy, Clone)]
+pub struct HitTestOptions {
+    /// Ignore objects used as masks (setMask / clipDepth).
+    pub skip_mask: bool,
+
+    /// Ignore objects with the ActionScript's visibility flag turned off.
+    pub skip_invisible: bool,
 }
 
 /// Represents the sound transfomr of sounds played inside a Flash MovieClip.

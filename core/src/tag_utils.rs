@@ -1,5 +1,4 @@
 use crate::backend::navigator::url_from_relative_path;
-use crate::property_map::PropertyMap;
 use gc_arena::Collect;
 use std::path::Path;
 use std::sync::Arc;
@@ -23,11 +22,18 @@ pub struct SwfMovie {
     /// The URL the SWF was downloaded from.
     url: Option<String>,
 
-    /// Any parameters provided when loading this movie (also known as 'flashvars')
-    parameters: PropertyMap<String>,
+    /// The URL that triggered the SWF load.
+    loader_url: Option<String>,
+
+    /// Any parameters provided when loading this movie (also known as 'flashvars'),
+    /// as a list of key-value pairs.
+    parameters: Vec<(String, String)>,
 
     /// The suggest encoding for this SWF.
     encoding: &'static swf::Encoding,
+
+    /// The compressed length of the entire datastream
+    compressed_length: usize,
 }
 
 impl SwfMovie {
@@ -44,8 +50,10 @@ impl SwfMovie {
             },
             data: vec![],
             url: None,
-            parameters: PropertyMap::new(),
+            loader_url: None,
+            parameters: Vec::new(),
             encoding: swf::UTF_8,
+            compressed_length: 0,
         }
     }
 
@@ -59,33 +67,42 @@ impl SwfMovie {
             header: self.header.clone(),
             data,
             url: source.url.clone(),
+            loader_url: source.loader_url.clone(),
             parameters: source.parameters.clone(),
             encoding: source.encoding,
+            compressed_length: source.compressed_length,
         }
     }
 
     /// Utility method to construct a movie from a file on disk.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+    pub fn from_path<P: AsRef<Path>>(path: P, loader_url: Option<String>) -> Result<Self, Error> {
         let mut url = path.as_ref().to_string_lossy().to_owned().to_string();
         let cwd = std::env::current_dir()?;
         if let Ok(abs_url) = url_from_relative_path(cwd, &url) {
-            url = abs_url.into_string();
+            url = abs_url.into();
         }
 
         let data = std::fs::read(path)?;
-        Self::from_data(&data, Some(url))
+        Self::from_data(&data, Some(url), loader_url)
     }
 
     /// Construct a movie based on the contents of the SWF datastream.
-    pub fn from_data(swf_data: &[u8], url: Option<String>) -> Result<Self, Error> {
+    pub fn from_data(
+        swf_data: &[u8],
+        url: Option<String>,
+        loader_url: Option<String>,
+    ) -> Result<Self, Error> {
+        let compressed_length = swf_data.len();
         let swf_buf = swf::read::decompress_swf(swf_data)?;
         let encoding = swf::SwfStr::encoding_for_version(swf_buf.header.version);
         Ok(Self {
             header: swf_buf.header,
             data: swf_buf.data,
             url,
-            parameters: PropertyMap::new(),
+            loader_url,
+            parameters: Vec::new(),
             encoding,
+            compressed_length,
         })
     }
 
@@ -123,12 +140,21 @@ impl SwfMovie {
         self.url.as_deref()
     }
 
-    pub fn parameters(&self) -> &PropertyMap<String> {
+    /// Get the URL that triggered the fetch of this SWF.
+    pub fn loader_url(&self) -> Option<&str> {
+        self.loader_url.as_deref()
+    }
+
+    pub fn parameters(&self) -> &[(String, String)] {
         &self.parameters
     }
 
-    pub fn parameters_mut(&mut self) -> &mut PropertyMap<String> {
-        &mut self.parameters
+    pub fn append_parameters(&mut self, params: impl IntoIterator<Item = (String, String)>) {
+        self.parameters.extend(params);
+    }
+
+    pub fn compressed_length(&self) -> usize {
+        self.compressed_length
     }
 }
 

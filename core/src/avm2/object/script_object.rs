@@ -134,26 +134,30 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         self.0.write(gc_context).delete_property(name)
     }
 
-    fn get_slot(self, id: u32) -> Result<Value<'gc>, Error> {
-        self.0.read().get_slot(id)
+    fn has_slot_local(self, id: u32) -> bool {
+        self.0.read().has_slot_local(id)
     }
 
-    fn set_slot(
+    fn get_slot_local(self, id: u32) -> Result<Value<'gc>, Error> {
+        self.0.read().get_slot_local(id)
+    }
+
+    fn set_slot_local(
         self,
         id: u32,
         value: Value<'gc>,
         mc: MutationContext<'gc, '_>,
     ) -> Result<(), Error> {
-        self.0.write(mc).set_slot(id, value, mc)
+        self.0.write(mc).set_slot_local(id, value, mc)
     }
 
-    fn init_slot(
+    fn init_slot_local(
         self,
         id: u32,
         value: Value<'gc>,
         mc: MutationContext<'gc, '_>,
     ) -> Result<(), Error> {
-        self.0.write(mc).init_slot(id, value, mc)
+        self.0.write(mc).init_slot_local(id, value, mc)
     }
 
     fn get_method(self, id: u32) -> Option<Object<'gc>> {
@@ -164,12 +168,20 @@ impl<'gc> TObject<'gc> for ScriptObject<'gc> {
         self.0.read().get_trait(name)
     }
 
+    fn get_trait_slot(self, id: u32) -> Result<Option<Trait<'gc>>, Error> {
+        self.0.read().get_trait_slot(id)
+    }
+
     fn get_provided_trait(
         &self,
         name: &QName<'gc>,
         known_traits: &mut Vec<Trait<'gc>>,
     ) -> Result<(), Error> {
         self.0.read().get_provided_trait(name, known_traits)
+    }
+
+    fn get_provided_trait_slot(&self, id: u32) -> Result<Option<Trait<'gc>>, Error> {
+        self.0.read().get_provided_trait_slot(id)
     }
 
     fn get_scope(self) -> Option<GcCell<'gc, Scope<'gc>>> {
@@ -365,8 +377,10 @@ impl<'gc> ScriptObject<'gc> {
 
     /// Construct a bare class prototype with no base class.
     ///
-    /// This appears to be used specifically for interfaces, which have no base
-    /// class.
+    /// This is used in cases where a prototype needs to exist, but it does not
+    /// need to extend `Object`. This is the case for interfaces and activation
+    /// objects, both of which need to participate in the class mechanism but
+    /// are not `Object`s.
     pub fn bare_prototype(
         mc: MutationContext<'gc, '_>,
         class: GcCell<'gc, Class<'gc>>,
@@ -453,7 +467,9 @@ impl<'gc> ScriptObjectData<'gc> {
         };
 
         if let Some(slot_id) = slot_id {
-            self.set_slot(slot_id, value, activation.context.gc_context)?;
+            // This doesn't need the non-local version of this property because
+            // by the time this has called the slot was already installed
+            self.set_slot_local(slot_id, value, activation.context.gc_context)?;
             Ok(Value::Undefined.into())
         } else if self.values.contains_key(name) {
             let prop = self.values.get_mut(name).unwrap();
@@ -478,7 +494,10 @@ impl<'gc> ScriptObjectData<'gc> {
     ) -> Result<ReturnValue<'gc>, Error> {
         if let Some(prop) = self.values.get_mut(name) {
             if let Some(slot_id) = prop.slot_id() {
-                self.init_slot(slot_id, value, activation.context.gc_context)?;
+                // This doesn't need the non-local version of this property
+                // because by the time this has called the slot was already
+                // installed
+                self.init_slot_local(slot_id, value, activation.context.gc_context)?;
                 Ok(Value::Undefined.into())
             } else {
                 let proto = self.proto;
@@ -514,8 +533,14 @@ impl<'gc> ScriptObjectData<'gc> {
         can_delete
     }
 
-    pub fn get_slot(&self, id: u32) -> Result<Value<'gc>, Error> {
-        //TODO: slot inheritance, I think?
+    pub fn has_slot_local(&self, id: u32) -> bool {
+        self.slots
+            .get(id as usize)
+            .map(|s| s.is_occupied())
+            .unwrap_or(false)
+    }
+
+    pub fn get_slot_local(&self, id: u32) -> Result<Value<'gc>, Error> {
         self.slots
             .get(id as usize)
             .cloned()
@@ -524,7 +549,7 @@ impl<'gc> ScriptObjectData<'gc> {
     }
 
     /// Set a slot by its index.
-    pub fn set_slot(
+    pub fn set_slot_local(
         &mut self,
         id: u32,
         value: Value<'gc>,
@@ -537,8 +562,8 @@ impl<'gc> ScriptObjectData<'gc> {
         }
     }
 
-    /// Set a slot by its index.
-    pub fn init_slot(
+    /// Initialize a slot by its index.
+    pub fn init_slot_local(
         &mut self,
         id: u32,
         value: Value<'gc>,
@@ -591,6 +616,33 @@ impl<'gc> ScriptObjectData<'gc> {
         }
     }
 
+    pub fn get_trait_slot(&self, id: u32) -> Result<Option<Trait<'gc>>, Error> {
+        match &self.class {
+            //Class constructors have local slot traits only.
+            ScriptObjectClass::ClassConstructor(..) => self.get_provided_trait_slot(id),
+
+            //Prototypes do not have traits available locally, but they provide
+            //traits instead.
+            ScriptObjectClass::InstancePrototype(..) => Ok(None),
+
+            //Instances walk the prototype chain to build a list of known
+            //traits provided by the classes attached to those prototypes.
+            ScriptObjectClass::NoClass => {
+                let mut proto = self.proto();
+
+                while let Some(p) = proto {
+                    if let Some(trait_val) = p.get_provided_trait_slot(id)? {
+                        return Ok(Some(trait_val));
+                    }
+
+                    proto = p.proto();
+                }
+
+                Ok(None)
+            }
+        }
+    }
+
     pub fn get_provided_trait(
         &self,
         name: &QName<'gc>,
@@ -604,6 +656,18 @@ impl<'gc> ScriptObjectData<'gc> {
                 class.read().lookup_instance_traits(name, known_traits)
             }
             ScriptObjectClass::NoClass => Ok(()),
+        }
+    }
+
+    pub fn get_provided_trait_slot(&self, id: u32) -> Result<Option<Trait<'gc>>, Error> {
+        match &self.class {
+            ScriptObjectClass::ClassConstructor(class, ..) => {
+                class.read().lookup_class_traits_by_slot(id)
+            }
+            ScriptObjectClass::InstancePrototype(class, ..) => {
+                class.read().lookup_instance_traits_by_slot(id)
+            }
+            ScriptObjectClass::NoClass => Ok(None),
         }
     }
 

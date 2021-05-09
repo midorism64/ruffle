@@ -56,7 +56,7 @@ impl Color {
         ((self.0 >> 24) & 0xFF) as u8
     }
 
-    pub fn to_premultiplied_alpha(&self, transparency: bool) -> Color {
+    pub fn to_premultiplied_alpha(self, transparency: bool) -> Color {
         // This has some accuracy issues with some alpha values
 
         let old_alpha = if transparency { self.alpha() } else { 255 };
@@ -70,7 +70,7 @@ impl Color {
         Color::argb(old_alpha, r, g, b)
     }
 
-    pub fn to_un_multiplied_alpha(&self) -> Color {
+    pub fn to_un_multiplied_alpha(self) -> Color {
         let a = self.alpha() as f64 / 255.0;
 
         let r = (self.red() as f64 / a).round() as u8;
@@ -164,13 +164,13 @@ pub struct BitmapData {
 }
 
 impl BitmapData {
-    pub fn init_pixels(&mut self, width: u32, height: u32, fill_color: i32, transparency: bool) {
+    pub fn init_pixels(&mut self, width: u32, height: u32, transparency: bool, fill_color: i32) {
         self.width = width;
         self.height = height;
         self.transparency = transparency;
         self.pixels = vec![
             Color(fill_color).to_premultiplied_alpha(self.transparency());
-            (width * height) as usize
+            width as usize * height as usize
         ];
         self.dirty = true;
     }
@@ -215,8 +215,12 @@ impl BitmapData {
         &self.pixels
     }
 
-    pub fn set_pixels(&mut self, pixels: Vec<Color>) {
+    pub fn set_pixels(&mut self, width: u32, height: u32, transparency: bool, pixels: Vec<Color>) {
+        self.width = width;
+        self.height = height;
+        self.transparency = transparency;
         self.pixels = pixels;
+        self.dirty = true;
     }
 
     pub fn pixels_rgba(&self) -> Vec<u8> {
@@ -241,7 +245,7 @@ impl BitmapData {
     }
 
     pub fn get_pixel_raw(&self, x: u32, y: u32) -> Option<Color> {
-        if x > self.width() || y > self.height() {
+        if x >= self.width() || y >= self.height() {
             return None;
         }
 
@@ -255,10 +259,10 @@ impl BitmapData {
     }
 
     pub fn get_pixel(&self, x: i32, y: i32) -> i32 {
-        if !self.is_point_in_bounds(x, y) {
-            0
-        } else {
+        if self.is_point_in_bounds(x, y) {
             self.get_pixel32(x, y).with_alpha(0x0).into()
+        } else {
+            0
         }
     }
 
@@ -478,14 +482,14 @@ impl BitmapData {
         mask: i32,
         color: i32,
     ) -> (u32, u32, u32, u32) {
-        let mut min_x = Option::<i32>::None;
-        let mut max_x = Option::<i32>::None;
-        let mut min_y = Option::<i32>::None;
-        let mut max_y = Option::<i32>::None;
+        let mut min_x = self.width();
+        let mut max_x = 0;
+        let mut min_y = self.height();
+        let mut max_y = 0;
 
         for x in 0..self.width() {
             for y in 0..self.height() {
-                let pixel_raw: i32 = self.get_pixel_raw(x, y).unwrap_or_else(|| 0.into()).into();
+                let pixel_raw: i32 = self.get_pixel_raw(x, y).unwrap().into();
                 let color_matches = if find_color {
                     (pixel_raw & mask) == color
                 } else {
@@ -493,34 +497,24 @@ impl BitmapData {
                 };
 
                 if color_matches {
-                    if (x as i32) < min_x.unwrap_or(self.width() as i32) {
-                        min_x = Some(x as i32)
-                    }
-                    if (x as i32) > max_x.unwrap_or(-1) {
-                        max_x = Some(x as i32 + 1)
-                    }
-
-                    if (y as i32) < min_y.unwrap_or(self.height() as i32) {
-                        min_y = Some(y as i32)
-                    }
-                    if (y as i32) > max_y.unwrap_or(-1) {
-                        max_y = Some(y as i32 + 1)
-                    }
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
                 }
             }
         }
 
-        let min_x = min_x.unwrap_or(0);
-        let min_y = min_y.unwrap_or(0);
-        let max_x = max_x.unwrap_or(0);
-        let max_y = max_y.unwrap_or(0);
-
-        let x = min_x as u32;
-        let y = min_y as u32;
-        let w = (max_x - min_x) as u32;
-        let h = (max_y - min_y) as u32;
-
-        (x, y, w, h)
+        // Flash treats a match of (0, 0) alone as none.
+        if max_x > 0 || max_y > 0 {
+            let x = min_x;
+            let y = min_y;
+            let w = max_x - min_x + 1;
+            let h = max_y - min_y + 1;
+            (x, y, w, h)
+        } else {
+            (0, 0, 0, 0)
+        }
     }
 
     pub fn copy_pixels(
@@ -604,6 +598,66 @@ impl BitmapData {
                 }
 
                 self.set_pixel32_raw(dest_x as u32, dest_y as u32, dest_color);
+            }
+        }
+    }
+
+    pub fn merge(
+        &mut self,
+        source_bitmap: &Self,
+        src_rect: (i32, i32, i32, i32),
+        dest_point: (i32, i32),
+        rgba_mult: (i32, i32, i32, i32),
+    ) {
+        let (src_min_x, src_min_y, src_width, src_height) = src_rect;
+        let (dest_min_x, dest_min_y) = dest_point;
+
+        for src_y in src_min_y..(src_min_y + src_height) {
+            for src_x in src_min_x..(src_min_x + src_width) {
+                let dest_x = src_x - src_min_x + dest_min_x;
+                let dest_y = src_y - src_min_y + dest_min_y;
+
+                if !self.is_point_in_bounds(dest_x, dest_y)
+                    || !source_bitmap.is_point_in_bounds(src_x, src_y)
+                {
+                    continue;
+                }
+
+                let source_color = source_bitmap
+                    .get_pixel_raw(src_x as u32, src_y as u32)
+                    .unwrap()
+                    .to_un_multiplied_alpha();
+
+                let dest_color = self
+                    .get_pixel_raw(dest_x as u32, dest_y as u32)
+                    .unwrap()
+                    .to_un_multiplied_alpha();
+
+                let red_mult = rgba_mult.0.clamp(0, 256) as u16;
+                let green_mult = rgba_mult.1.clamp(0, 256) as u16;
+                let blue_mult = rgba_mult.2.clamp(0, 256) as u16;
+                let alpha_mult = rgba_mult.3.clamp(0, 256) as u16;
+
+                let red = (source_color.red() as u16 * red_mult
+                    + dest_color.red() as u16 * (256 - red_mult))
+                    / 256;
+                let green = (source_color.green() as u16 * green_mult
+                    + dest_color.green() as u16 * (256 - green_mult))
+                    / 256;
+                let blue = (source_color.blue() as u16 * blue_mult
+                    + dest_color.blue() as u16 * (256 - blue_mult))
+                    / 256;
+                let alpha = (source_color.alpha() as u16 * alpha_mult
+                    + dest_color.alpha() as u16 * (256 - alpha_mult))
+                    / 256;
+
+                let mix_color = Color::argb(alpha as u8, red as u8, green as u8, blue as u8);
+
+                self.set_pixel32_raw(
+                    dest_x as u32,
+                    dest_y as u32,
+                    mix_color.to_premultiplied_alpha(self.transparency),
+                );
             }
         }
     }

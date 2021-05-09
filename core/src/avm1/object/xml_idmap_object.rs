@@ -102,7 +102,6 @@ impl<'gc> TObject<'gc> for XmlIdMapObject<'gc> {
         self.base().call_setter(name, value, activation)
     }
 
-    #[allow(clippy::new_ret_no_self)]
     fn create_bare_object(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
@@ -185,11 +184,11 @@ impl<'gc> TObject<'gc> for XmlIdMapObject<'gc> {
             .set_attributes(gc_context, name, set_attributes, clear_attributes)
     }
 
-    fn proto(&self) -> Option<Object<'gc>> {
+    fn proto(&self) -> Value<'gc> {
         self.base().proto()
     }
 
-    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Option<Object<'gc>>) {
+    fn set_proto(&self, gc_context: MutationContext<'gc, '_>, prototype: Value<'gc>) {
         self.base().set_proto(gc_context, prototype);
     }
 

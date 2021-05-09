@@ -82,6 +82,7 @@ impl<'gc> TDisplayObject<'gc> for MorphShape<'gc> {
         &self,
         _context: &mut UpdateContext<'_, 'gc, '_>,
         point: (Twips, Twips),
+        _options: HitTestOptions,
     ) -> bool {
         if self.world_bounds().contains(point) {
             if let Some(frame) = self.0.read().static_data.frames.get(&self.ratio()) {
@@ -179,10 +180,10 @@ impl MorphShapeStatic {
         let mut end_iter = self.end.shape.iter();
         let mut start = start_iter.next();
         let mut end = end_iter.next();
-        let mut start_x = Twips::new(0);
-        let mut start_y = Twips::new(0);
-        let mut end_x = Twips::new(0);
-        let mut end_y = Twips::new(0);
+        let mut start_x = Twips::zero();
+        let mut start_y = Twips::zero();
+        let mut end_x = Twips::zero();
+        let mut end_y = Twips::zero();
         // TODO: Feels like this could be cleaned up a bit.
         // We step through both the start records and end records, interpolating edges pairwise.
         // Fill style/line style changes should only appear in the start records.

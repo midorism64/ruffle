@@ -27,7 +27,10 @@ pub struct ByteArrayObjectData<'gc> {
 }
 
 impl<'gc> ByteArrayObject<'gc> {
-    pub fn construct(mc: MutationContext<'gc, '_>, base_proto: Option<Object<'gc>>) -> Object<'gc> {
+    pub fn new(
+        mc: MutationContext<'gc, '_>,
+        base_proto: Option<Object<'gc>>,
+    ) -> ByteArrayObject<'gc> {
         let base = ScriptObjectData::base_new(base_proto, ScriptObjectClass::NoClass);
 
         ByteArrayObject(GcCell::allocate(
@@ -37,7 +40,10 @@ impl<'gc> ByteArrayObject<'gc> {
                 storage: ByteArrayStorage::new(),
             },
         ))
-        .into()
+    }
+
+    pub fn construct(mc: MutationContext<'gc, '_>, base_proto: Option<Object<'gc>>) -> Object<'gc> {
+        Self::new(mc, base_proto).into()
     }
 
     pub fn derive(
@@ -238,5 +244,9 @@ impl<'gc> TObject<'gc> for ByteArrayObject<'gc> {
 
     fn as_bytearray_mut(&self, mc: MutationContext<'gc, '_>) -> Option<RefMut<ByteArrayStorage>> {
         Some(RefMut::map(self.0.write(mc), |d| &mut d.storage))
+    }
+
+    fn as_bytearray_object(&self) -> Option<ByteArrayObject<'gc>> {
+        Some(*self)
     }
 }

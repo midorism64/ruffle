@@ -94,7 +94,7 @@ fn take_screenshot(
     progress: &Option<ProgressBar>,
     size: SizeOpt,
 ) -> Result<(Descriptors, Vec<RgbaImage>), Box<dyn std::error::Error>> {
-    let movie = SwfMovie::from_path(&swf_path)?;
+    let movie = SwfMovie::from_path(&swf_path, None)?;
 
     let width = size.width.unwrap_or_else(|| movie.width());
     let width = (width as f32 * size.scale).round() as u32;
@@ -117,7 +117,7 @@ fn take_screenshot(
     player
         .lock()
         .unwrap()
-        .set_viewport_dimensions(width, height);
+        .set_viewport_dimensions(width, height, size.scale as f64);
     player.lock().unwrap().set_root_movie(Arc::new(movie));
 
     let mut result = Vec::new();
@@ -125,7 +125,7 @@ fn take_screenshot(
 
     for i in 0..totalframes {
         if let Some(progress) = &progress {
-            progress.set_message(&format!(
+            progress.set_message(format!(
                 "{} frame {}",
                 swf_path.file_stem().unwrap().to_string_lossy(),
                 i
@@ -182,13 +182,13 @@ fn find_files(root: &Path, with_progress: bool) -> Vec<DirEntry> {
         if f_name.ends_with(".swf") {
             results.push(entry);
             if let Some(progress) = &progress {
-                progress.set_message(&format!("Searching for swf files... {}", results.len()));
+                progress.set_message(format!("Searching for swf files... {}", results.len()));
             }
         }
     }
 
     if let Some(progress) = &progress {
-        progress.finish_with_message(&format!("Found {} swf files to export", results.len()));
+        progress.finish_with_message(format!("Found {} swf files to export", results.len()));
     }
 
     results
@@ -197,11 +197,9 @@ fn find_files(root: &Path, with_progress: bool) -> Vec<DirEntry> {
 fn capture_single_swf(descriptors: Descriptors, opt: &Opt) -> Result<(), Box<dyn Error>> {
     let output = opt.output_path.clone().unwrap_or_else(|| {
         let mut result = PathBuf::new();
+        result.set_file_name(opt.swf.file_stem().unwrap());
         if opt.frames == 1 {
-            result.set_file_name(opt.swf.file_stem().unwrap());
             result.set_extension("png");
-        } else {
-            result.set_file_name(opt.swf.file_stem().unwrap());
         }
         result
     });
@@ -234,7 +232,7 @@ fn capture_single_swf(descriptors: Descriptors, opt: &Opt) -> Result<(), Box<dyn
     )?;
 
     if let Some(progress) = &progress {
-        progress.set_message(&opt.swf.file_stem().unwrap().to_string_lossy());
+        progress.set_message(opt.swf.file_stem().unwrap().to_string_lossy().into_owned());
     }
 
     if frames.len() == 1 {
@@ -263,7 +261,7 @@ fn capture_single_swf(descriptors: Descriptors, opt: &Opt) -> Result<(), Box<dyn
     };
 
     if let Some(progress) = progress {
-        progress.finish_with_message(&message);
+        progress.finish_with_message(message);
     } else {
         println!("{}", message);
     }
@@ -271,6 +269,7 @@ fn capture_single_swf(descriptors: Descriptors, opt: &Opt) -> Result<(), Box<dyn
     Ok(())
 }
 
+#[allow(unknown_lints, clippy::branches_sharing_code)]
 fn capture_multiple_swfs(mut descriptors: Descriptors, opt: &Opt) -> Result<(), Box<dyn Error>> {
     let output = opt.output_path.clone().unwrap();
     let files = find_files(&opt.swf, !opt.silent);
@@ -301,7 +300,13 @@ fn capture_multiple_swfs(mut descriptors: Descriptors, opt: &Opt) -> Result<(), 
         descriptors = new_descriptors;
 
         if let Some(progress) = &progress {
-            progress.set_message(&file.path().file_stem().unwrap().to_string_lossy());
+            progress.set_message(
+                file.path()
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
 
         let mut relative_path = file
@@ -347,7 +352,7 @@ fn capture_multiple_swfs(mut descriptors: Descriptors, opt: &Opt) -> Result<(), 
     };
 
     if let Some(progress) = progress {
-        progress.finish_with_message(&message);
+        progress.finish_with_message(message);
     } else {
         println!("{}", message);
     }

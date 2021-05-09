@@ -11,6 +11,8 @@ import {
     AutoPlay,
     UnmuteOverlay,
 } from "./load-options";
+import { MovieMetadata } from "./movie-metadata";
+import { InternalContextMenuItem } from "./context-menu";
 
 export const FLASH_MIMETYPE = "application/x-shockwave-flash";
 export const FUTURESPLASH_MIMETYPE = "application/futuresplash";
@@ -24,6 +26,7 @@ const DIMENSION_REGEX = /^\s*(\d+(\.\d+)?(%)?)/;
 
 enum PanicError {
     Unknown,
+    CSPConflict,
     FileProtocol,
     JavascriptConfiguration,
     JavascriptConflict,
@@ -32,15 +35,19 @@ enum PanicError {
     WasmNotFound,
 }
 
+// Safari still requires prefixed fullscreen APIs, see:
+// https://developer.mozilla.org/en-US/docs/Web/API/Element/requestFullScreen
+// Safari uses alternate capitalization of FullScreen in some older APIs.
 declare global {
     interface Document {
         webkitFullscreenEnabled?: boolean;
-        webkitFullscreenElement?: HTMLElement;
+        webkitFullscreenElement?: boolean;
+        webkitExitFullscreen?: () => void;
         webkitCancelFullScreen?: () => void;
     }
-
     interface HTMLElement {
-        webkitRequestFullScreen?: () => void;
+        webkitRequestFullscreen?: (arg0: unknown) => unknown;
+        webkitRequestFullScreen?: (arg0: unknown) => unknown;
     }
 }
 
@@ -61,11 +68,11 @@ interface ContextMenuItem {
     onClick: (event: MouseEvent) => void;
 
     /**
-     * Whether to add a separator right after the item
+     * Whether the item is clickable
      *
      * @default true
      */
-    separator?: boolean;
+    enabled?: boolean;
 }
 
 /**
@@ -113,15 +120,28 @@ export class RufflePlayer extends HTMLElement {
     private contextMenuElement: HTMLElement;
     private hasContextMenu = false;
 
+    // Whether this device is a touch device.
+    // Set to true when a touch event is encountered.
+    private isTouch = false;
+
     private swfUrl?: string;
     private instance: Ruffle | null;
     private options: BaseLoadOptions | null;
     private _trace_observer: ((message: string) => void) | null;
     private lastActivePlayingState: boolean;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    private ruffleConstructor: Promise<{ new (...args: any[]): Ruffle }>;
+    private _metadata: MovieMetadata | null;
+    private _readyState: ReadyState;
+
+    private ruffleConstructor: Promise<typeof Ruffle>;
     private panicked = false;
+
+    /**
+     * Triggered when a movie metadata has been loaded (such as movie width and height).
+     *
+     * @event RufflePlayer#loadedmetadata
+     */
+    static LOADED_METADATA = "loadedmetadata";
 
     /**
      * A movie can communicate with the hosting page using fscommand
@@ -138,6 +158,26 @@ export class RufflePlayer extends HTMLElement {
      * This will be defaulted with any global configuration.
      */
     config: Config = {};
+
+    /**
+     * Indicates the readiness of the playing movie.
+     *
+     * @returns The `ReadyState` of the player.
+     */
+    get readyState(): ReadyState {
+        return this._readyState;
+    }
+
+    /**
+     * The metadata of the playing movie (such as movie width and height).
+     * These are inherent properties stored in the SWF file and are not affected by runtime changes.
+     * For example, `metadata.width` is the width of the SWF file, and not the width of the Ruffle player.
+     *
+     * @returns The metadata of the movie, or `null` if the movie metadata has not yet loaded.
+     */
+    get metadata(): MovieMetadata | null {
+        return this._metadata;
+    }
 
     /**
      * Constructs a new Ruffle flash player for insertion onto the page.
@@ -168,12 +208,16 @@ export class RufflePlayer extends HTMLElement {
 
         this.contextMenuElement = this.shadow.getElementById("context-menu")!;
         this.addEventListener("contextmenu", this.showContextMenu.bind(this));
+        this.addEventListener("pointerdown", this.pointerDown.bind(this));
         window.addEventListener("click", this.hideContextMenu.bind(this));
 
         this.instance = null;
         this.options = null;
         this.onFSCommand = null;
         this._trace_observer = null;
+
+        this._readyState = ReadyState.HaveNothing;
+        this._metadata = null;
 
         this.ruffleConstructor = loadRuffle();
 
@@ -248,11 +292,7 @@ export class RufflePlayer extends HTMLElement {
      * @internal
      */
     disconnectedCallback(): void {
-        if (this.instance) {
-            this.instance.destroy();
-            this.instance = null;
-            console.log("Ruffle instance destroyed.");
-        }
+        this.destroy();
     }
 
     /**
@@ -334,11 +374,7 @@ export class RufflePlayer extends HTMLElement {
      * @private
      */
     private async ensureFreshInstance(config: BaseLoadOptions): Promise<void> {
-        if (this.instance) {
-            this.instance.destroy();
-            this.instance = null;
-            console.log("Ruffle instance destroyed.");
-        }
+        this.destroy();
 
         const ruffleConstructor = await this.ruffleConstructor.catch((e) => {
             console.error(`Serious error loading Ruffle: ${e}`);
@@ -346,7 +382,7 @@ export class RufflePlayer extends HTMLElement {
             // Serious duck typing. In error conditions, let's not make assumptions.
             if (window.location.protocol === "file:") {
                 e.ruffleIndexError = PanicError.FileProtocol;
-            } else if (!e.ruffleIsExtension) {
+            } else {
                 e.ruffleIndexError = PanicError.WasmNotFound;
                 const message = String(e.message).toLowerCase();
                 if (message.includes("mime")) {
@@ -356,6 +392,8 @@ export class RufflePlayer extends HTMLElement {
                     message.includes("failed to fetch")
                 ) {
                     e.ruffleIndexError = PanicError.WasmCors;
+                } else if (message.includes("disallowed by embedder")) {
+                    e.ruffleIndexError = PanicError.CSPConflict;
                 } else if (
                     !message.includes("magic") &&
                     (e.name === "CompileError" || e.name === "TypeError")
@@ -427,6 +465,19 @@ export class RufflePlayer extends HTMLElement {
             }
         } else {
             this.playButton.style.display = "block";
+        }
+    }
+
+    /**
+     * Destroys the currently running instance of Ruffle.
+     */
+    private destroy(): void {
+        if (this.instance) {
+            this.instance.destroy();
+            this.instance = null;
+            this._metadata = null;
+            this._readyState = ReadyState.HaveNothing;
+            console.log("Ruffle instance destroyed.");
         }
     }
 
@@ -578,10 +629,15 @@ export class RufflePlayer extends HTMLElement {
      * This is not guaranteed to succeed, please check [[fullscreenEnabled]] first.
      */
     enterFullscreen(): void {
+        const options = {
+            navigationUI: "hide",
+        } as const;
         if (this.requestFullscreen) {
-            this.requestFullscreen();
+            this.requestFullscreen(options);
+        } else if (this.webkitRequestFullscreen) {
+            this.webkitRequestFullscreen(options);
         } else if (this.webkitRequestFullScreen) {
-            this.webkitRequestFullScreen();
+            this.webkitRequestFullScreen(options);
         }
     }
 
@@ -591,13 +647,39 @@ export class RufflePlayer extends HTMLElement {
     exitFullscreen(): void {
         if (document.exitFullscreen) {
             document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
         } else if (document.webkitCancelFullScreen) {
             document.webkitCancelFullScreen();
         }
     }
 
-    private contextMenuItems(): ContextMenuItem[] {
+    private pointerDown(event: PointerEvent): void {
+        // Disable context menu when touch support is being used
+        // to avoid a long press triggering the context menu. (#1972)
+        if (event.pointerType === "touch" || event.pointerType === "pen") {
+            this.isTouch = true;
+        }
+    }
+
+    private contextMenuItems(): Array<ContextMenuItem | null> {
         const items = [];
+
+        if (this.instance) {
+            const customItems: InternalContextMenuItem[] = this.instance.prepare_context_menu();
+            customItems.forEach((item, index) => {
+                if (item.separatorBefore) items.push(null);
+                items.push({
+                    // TODO: better checkboxes
+                    text: item.caption + (item.checked ? ` (\u2611)` : ``),
+                    onClick: () =>
+                        this.instance?.run_context_menu_callback(index),
+                    enabled: item.enabled,
+                });
+            });
+        }
+        items.push(null);
+
         if (this.fullscreenEnabled) {
             if (this.isFullscreen) {
                 items.push({
@@ -611,12 +693,12 @@ export class RufflePlayer extends HTMLElement {
                 });
             }
         }
+        items.push(null);
         items.push({
             text: `About Ruffle (%VERSION_NAME%)`,
             onClick() {
                 window.open(RUFFLE_ORIGIN, "_blank");
             },
-            separator: false,
         });
         return items;
     }
@@ -624,7 +706,7 @@ export class RufflePlayer extends HTMLElement {
     private showContextMenu(e: MouseEvent): void {
         e.preventDefault();
 
-        if (!this.hasContextMenu) {
+        if (!this.hasContextMenu || this.isTouch) {
             return;
         }
 
@@ -636,19 +718,33 @@ export class RufflePlayer extends HTMLElement {
         }
 
         // Populate context menu items.
-        for (const { text, onClick, separator } of this.contextMenuItems()) {
-            const menuItem = document.createElement("li");
-            menuItem.className = "menu_item active";
-            menuItem.textContent = text;
-            menuItem.addEventListener("click", onClick);
-            this.contextMenuElement.appendChild(menuItem);
+        for (const item of this.contextMenuItems()) {
+            if (item === null) {
+                if (!this.contextMenuElement.lastElementChild) continue; // don't start with separators
+                if (
+                    this.contextMenuElement.lastElementChild.classList.contains(
+                        "menu_separator"
+                    )
+                )
+                    continue; // don't repeat separators
 
-            if (separator !== false) {
                 const menuSeparator = document.createElement("li");
                 menuSeparator.className = "menu_separator";
                 const hr = document.createElement("hr");
                 menuSeparator.appendChild(hr);
                 this.contextMenuElement.appendChild(menuSeparator);
+            } else {
+                const { text, onClick, enabled } = item;
+                const menuItem = document.createElement("li");
+                menuItem.className = "menu_item active";
+                menuItem.textContent = text;
+                this.contextMenuElement.appendChild(menuItem);
+
+                if (enabled !== false) {
+                    menuItem.addEventListener("click", onClick);
+                } else {
+                    menuItem.classList.add("disabled");
+                }
             }
         }
 
@@ -671,6 +767,7 @@ export class RufflePlayer extends HTMLElement {
     }
 
     private hideContextMenu(): void {
+        this.instance?.clear_custom_menu_items();
         this.contextMenuElement.style.display = "none";
     }
 
@@ -972,6 +1069,18 @@ export class RufflePlayer extends HTMLElement {
                     <li><a href="#" id="panic-view-details">View Error Details</a></li>
                 `;
                 break;
+            case PanicError.CSPConflict:
+                // General error: Cannot load `.wasm` file - a native object / function is overriden
+                errorBody = `
+                    <p>Ruffle has encountered a major issue whilst trying to initialize.</p>
+                    <p>This web server's Content Security Policy does not allow the required ".wasm" component to run.</p>
+                    <p>If you are the server administrator, please consult the Ruffle wiki for help.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#configure-wasm-csp">View Ruffle Wiki</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
             default:
                 // Unknown error
                 errorBody = `
@@ -1008,10 +1117,7 @@ export class RufflePlayer extends HTMLElement {
         }
 
         // Do this last, just in case it causes any cascading issues.
-        if (this.instance) {
-            this.instance.destroy();
-            this.instance = null;
-        }
+        this.destroy();
     }
 
     displayUnsupportedMessage(): void {
@@ -1057,6 +1163,33 @@ export class RufflePlayer extends HTMLElement {
             this.options?.allowScriptAccess ?? false
         }\n`;
     }
+
+    private setMetadata(metadata: MovieMetadata) {
+        this._metadata = metadata;
+        // TODO: Switch this to ReadyState.Loading when we have streaming support.
+        this._readyState = ReadyState.Loaded;
+        this.dispatchEvent(new Event(RufflePlayer.LOADED_METADATA));
+    }
+}
+
+/**
+ * Describes the loading state of an SWF movie.
+ */
+export enum ReadyState {
+    /**
+     * No movie is loaded, or no information is yet available about the movie.
+     */
+    HaveNothing = 0,
+
+    /**
+     * The movie is still loading, but it has started playback, and metadata is available.
+     */
+    Loading = 1,
+
+    /**
+     * The movie has completely loaded.
+     */
+    Loaded = 2,
 }
 
 /**

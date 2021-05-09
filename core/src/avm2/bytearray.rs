@@ -6,6 +6,7 @@ use std::cmp;
 use std::convert::{TryFrom, TryInto};
 use std::io;
 use std::io::prelude::*;
+use std::ops::Range;
 
 #[derive(Clone, Collect, Debug)]
 #[collect(no_drop)]
@@ -292,6 +293,10 @@ impl ByteArrayStorage {
         self.bytes.get(item).copied()
     }
 
+    pub fn get_range(&self, item: Range<usize>) -> Option<&[u8]> {
+        self.bytes.get(item)
+    }
+
     pub fn set(&mut self, item: usize, value: u8) {
         if self.bytes.len() < (item + 1) {
             self.bytes.resize(item + 1, 0)
@@ -328,5 +333,27 @@ impl ByteArrayStorage {
 
     pub fn set_endian(&mut self, new_endian: Endian) {
         self.endian = new_endian;
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+impl Write for ByteArrayStorage {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_bytes(buf);
+
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Default for ByteArrayStorage {
+    fn default() -> Self {
+        Self::new()
     }
 }
