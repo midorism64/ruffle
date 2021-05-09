@@ -2,7 +2,6 @@
 
 ## これはなに
 [Ruffle](https://github.com/ruffle-rs/ruffle) の日本語関連の不具合を直してみたものです。  
-【2020/12/19, 2021/01/24追記】このリポジトリで対応していた本家Ruffleの不具合がだいたい直ったようなので、フォント（core/assets/noto-sans-definefont3.bin）だけ持っていって本家をビルドすれば日本語が表示できます。  
 noto-sans-definefont3.binが重い場合には、以下のフォントに差し替えて利用できます。
  - noto_sans_cjk_jis1.bin
    - JIS第一水準のみのサブセット
@@ -31,8 +30,6 @@ noto-sans-definefont3.binの作成には、とりぽっぽ🚂💨さん(twitter
      - ~~AVM1において指定されていない引数の扱いが不正(日本語とは関係なし)~~ →本家で対応いただいたのでそちらをマージして削除  
      - useCodepageの実装(WIP)
      - WINDOWS_1252文字コードをSHIFT_JISに変更
-
-   [追記] 本家の不具合がほとんど直ったようです！  
 
 以下、本家のREADMEです。
 
