@@ -640,7 +640,7 @@ impl<'gc> Loader<'gc> {
                 );
                 let datastr =
                 if activation.context.system.use_codepage {
-                    encoding_rs::SHIFT_JIS.decode(&data).0
+                    SwfStr::encoding_for_version(1).decode(&data).0
                 } else {
                     SwfStr::encoding_for_version(activation.swf_version()).decode(&data).0
                 };
