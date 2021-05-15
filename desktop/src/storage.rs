@@ -1,53 +1,81 @@
 use ruffle_core::backend::storage::StorageBackend;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
 pub struct DiskStorageBackend {
     base_path: PathBuf,
+    shared_objects_path: PathBuf,
 }
 
 impl DiskStorageBackend {
     pub fn new() -> Self {
-        let base_path = dirs::data_local_dir().unwrap().join(Path::new("ruffle"));
+        let base_path = dirs::data_local_dir().unwrap().join("ruffle");
+        let shared_objects_path = base_path.join("SharedObjects");
 
         // Create a base dir if one doesn't exist yet
-        if !base_path.exists() {
+        if !shared_objects_path.exists() {
             log::info!("Creating storage dir");
             if let Err(r) = fs::create_dir_all(&base_path) {
                 log::warn!("Unable to create storage dir {}", r);
             }
         }
 
-        DiskStorageBackend { base_path }
+        DiskStorageBackend {
+            base_path,
+            shared_objects_path,
+        }
+    }
+
+    /// Verifies that the path contains no `..` components to prevent accessing files outside of the Ruffle directory.
+    fn is_path_allowed(path: &Path) -> bool {
+        path.components().all(|c| c != Component::ParentDir)
+    }
+
+    fn get_shared_object_path(&self, name: &str) -> PathBuf {
+        self.shared_objects_path.join(format!("{}.sol", name))
+    }
+
+    fn get_back_compat_shared_object_path(&self, name: &str) -> PathBuf {
+        // Backwards compatibility with pre-05/09/2021:
+        // Search for data in old location, without .sol extension and # prefix.
+        // Remove this code eventually.
+        self.base_path.join(name.replacen("/#", "/", 1))
     }
 }
 
 impl StorageBackend for DiskStorageBackend {
-    fn get_string(&self, name: &str) -> Option<String> {
-        let full_path = self.base_path.join(Path::new(name));
-
-        match File::open(full_path) {
-            Ok(mut file) => {
-                let mut buffer = String::new();
-                if let Err(r) = file.read_to_string(&mut buffer) {
-                    log::warn!("Unable to read file content {:?}", r);
-                    None
-                } else {
-                    Some(buffer)
+    fn get(&self, name: &str) -> Option<Vec<u8>> {
+        let path = self.get_shared_object_path(name);
+        if !Self::is_path_allowed(&path) {
+            return None;
+        }
+        match std::fs::read(path) {
+            Ok(data) => Some(data),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let path = self.get_back_compat_shared_object_path(name);
+                match std::fs::read(path) {
+                    Ok(data) => Some(data),
+                    Err(e) => {
+                        log::warn!("Unable to read file {:?}", e);
+                        None
+                    }
                 }
             }
-            Err(r) => {
-                log::warn!("Unable to open file {:?}", r);
+            Err(e) => {
+                log::warn!("Unable to read file {:?}", e);
                 None
             }
         }
     }
 
-    fn put_string(&mut self, name: &str, value: String) -> bool {
-        let full_path = self.base_path.join(Path::new(name));
-        if let Some(parent_dir) = full_path.parent() {
+    fn put(&mut self, name: &str, value: &[u8]) -> bool {
+        let path = self.get_shared_object_path(name);
+        if !Self::is_path_allowed(&path) {
+            return false;
+        }
+        if let Some(parent_dir) = path.parent() {
             if !parent_dir.exists() {
                 if let Err(r) = fs::create_dir_all(&parent_dir) {
                     log::warn!("Unable to create storage dir {}", r);
@@ -56,9 +84,9 @@ impl StorageBackend for DiskStorageBackend {
             }
         }
 
-        match File::create(full_path) {
+        match File::create(path) {
             Ok(mut file) => {
-                if let Err(r) = file.write_all(value.as_bytes()) {
+                if let Err(r) = file.write_all(&value) {
                     log::warn!("Unable to write file content {:?}", r);
                     false
                 } else {
@@ -73,7 +101,10 @@ impl StorageBackend for DiskStorageBackend {
     }
 
     fn remove_key(&mut self, name: &str) {
-        let full_path = self.base_path.join(Path::new(name));
-        let _ = fs::remove_file(full_path);
+        let path = self.get_shared_object_path(name);
+        if !Self::is_path_allowed(&path) {
+            return;
+        }
+        let _ = fs::remove_file(path);
     }
 }

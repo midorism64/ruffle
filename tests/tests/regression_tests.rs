@@ -340,6 +340,11 @@ swf_tests! {
     (bad_swf_tag_past_eof, "avm1/bad_swf_tag_past_eof", 1),
     (sound, "avm1/sound", 1),
     (action_to_integer, "avm1/action_to_integer", 1),
+    (call_method_empty_name, "avm1/call_method_empty_name", 1),
+    (init_array_invalid, "avm1/init_array_invalid", 1),
+    (init_object_invalid, "avm1/init_array_invalid", 1),
+    (new_object_wrap, "avm1/new_object_wrap", 1),
+    (new_method_wrap, "avm1/new_method_wrap", 1),
     (as3_hello_world, "avm2/hello_world", 1),
     (as3_function_call, "avm2/function_call", 1),
     (as3_function_call_via_call, "avm2/function_call_via_call", 1),
@@ -677,6 +682,15 @@ fn shared_object_avm1() -> Result<(), Error> {
             Ok(())
         },
     )?;
+
+    // Verify that the flash cookie matches the expected one
+    let expected = std::fs::read("tests/swfs/avm1/shared_object/RuffleTest.sol")?;
+    assert_eq!(
+        expected,
+        memory_storage_backend
+            .get("localhost//RuffleTest")
+            .unwrap_or_default()
+    );
 
     // Re-run the SWF, verifying that the shared object persists.
     test_swf_with_hooks(

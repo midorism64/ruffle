@@ -804,7 +804,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_call_function(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let fn_name_value = self.context.avm1.pop();
         let fn_name = fn_name_value.coerce_to_string(self)?;
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize; // TODO(Herschel): max arg count?
+        let num_args = self.context.avm1.pop().coerce_to_u32(self)? as usize;
+        let num_args = num_args.min(self.context.avm1.stack.len());
         let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
@@ -828,9 +829,10 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn action_call_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let method = self.context.avm1.pop();
+        let method_name = self.context.avm1.pop();
         let object_val = self.context.avm1.pop();
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize; // TODO(Herschel): max arg count?
+        let num_args = self.context.avm1.pop().coerce_to_u32(self)? as usize;
+        let num_args = num_args.min(self.context.avm1.stack.len());
         let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
@@ -844,28 +846,24 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         let object = object_val.coerce_to_object(self);
 
-        let method_name = if method != Value::Undefined {
-            let name = method.coerce_to_string(self)?;
-            if name.is_empty() {
-                None
-            } else {
-                Some(name)
-            }
+        let method_name = if method_name == Value::Undefined {
+            "".into()
         } else {
-            None
+            method_name.coerce_to_string(self)?
         };
 
-        let result = if let Some(method_name) = method_name {
-            // Call `this[method_name]`
-            object.call_method(&method_name.as_str(), &args, self)?
-        } else {
+        let result = if method_name.is_empty() {
             // Undefined/empty method name; call `this` as a function.
             // TODO: Pass primitive value instead of boxing (#843).
             let this = Value::Undefined.coerce_to_object(self);
             object.call("[Anonymous]", self, this, None, &args)?
+        } else {
+            // Call `this[method_name]`.
+            object.call_method(&method_name.as_str(), &args, self)?
         };
 
         self.context.avm1.push(result);
+
         self.continue_if_base_clip_exists()
     }
 
@@ -1473,51 +1471,71 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn action_init_array(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let num_elements = self.context.avm1.pop().coerce_to_f64(self)? as i64;
-        let array = ScriptObject::array(
-            self.context.gc_context,
-            Some(self.context.avm1.prototypes.array),
-        );
+        let num_elements = self.context.avm1.pop().coerce_to_f64(self)?;
+        let result = if num_elements < 0.0 || num_elements > std::i32::MAX as f64 {
+            // InitArray pops no args and pushes undefined if num_elements is out of range.
+            Value::Undefined
+        } else {
+            let array = ScriptObject::array(
+                self.context.gc_context,
+                Some(self.context.avm1.prototypes.array),
+            );
+            for i in 0..num_elements as usize {
+                array.set_array_element(i, self.context.avm1.pop(), self.context.gc_context);
+            }
+            Value::Object(array.into())
+        };
 
-        for i in 0..num_elements {
-            array.set_array_element(i as usize, self.context.avm1.pop(), self.context.gc_context);
-        }
-
-        self.context.avm1.push(Value::Object(array.into()));
+        self.context.avm1.push(result);
         Ok(FrameControl::Continue)
     }
 
     fn action_init_object(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let num_props = self.context.avm1.pop().coerce_to_f64(self)? as i64;
-        let object = ScriptObject::object(
-            self.context.gc_context,
-            Some(self.context.avm1.prototypes.object),
-        );
-        for _ in 0..num_props {
-            let value = self.context.avm1.pop();
-            let name_val = self.context.avm1.pop();
-            let name = name_val.coerce_to_string(self)?;
-            object.set(&name, value, self)?;
-        }
+        let num_props = self.context.avm1.pop().coerce_to_f64(self)?;
+        let result = if num_props < 0.0 || num_props > std::i32::MAX as f64 {
+            // InitArray pops no args and pushes undefined if num_props is out of range.
+            Value::Undefined
+        } else {
+            let object = ScriptObject::object(
+                self.context.gc_context,
+                Some(self.context.avm1.prototypes.object),
+            );
+            for _ in 0..num_props as usize {
+                let value = self.context.avm1.pop();
+                let name_val = self.context.avm1.pop();
+                let name = name_val.coerce_to_string(self)?;
+                object.set(&name, value, self)?;
+            }
+            Value::Object(object.into())
+        };
 
-        self.context.avm1.push(Value::Object(object.into()));
-
+        self.context.avm1.push(result);
         Ok(FrameControl::Continue)
     }
 
     fn action_implements_op(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        let constr = self.context.avm1.pop().coerce_to_object(self);
-        let count = self.context.avm1.pop().coerce_to_f64(self)? as i64; //TODO: Is this coercion actually performed by Flash?
-        let mut interfaces = vec![];
+        let constructor = self.context.avm1.pop().coerce_to_object(self);
+        let count = self.context.avm1.pop();
+        // Old Flash Players (at least FP9) used to coerce objects as well. However, this was
+        // changed at some point and instead the following is logged:
+        // "Parameters of type Object are no longer coerced into the required primitive type - number."
+        // Newer Flash Players coerce only primitives, and treat objects as 0.
+        let count = if count.is_primitive() {
+            count.coerce_to_i32(self)? as usize
+        } else {
+            avm_warn!(self, "ImplementsOp: Object not coerced into number");
+            0
+        };
+        let count = count.min(self.context.avm1.stack.len());
+        let mut interfaces = Vec::with_capacity(count);
 
-        //TODO: If one of the interfaces is not an object, do we leave the
-        //whole stack dirty, or...?
+        // TODO: If one of the interfaces is not an object, do we leave the
+        // whole stack dirty, or...?
         for _ in 0..count {
             interfaces.push(self.context.avm1.pop().coerce_to_object(self));
         }
 
-        let prototype = constr.get("prototype", self)?.coerce_to_object(self);
-
+        let prototype = constructor.get("prototype", self)?.coerce_to_object(self);
         prototype.set_interfaces(self.context.gc_context, interfaces);
 
         Ok(FrameControl::Continue)
@@ -1686,7 +1704,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_new_method(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let method_name = self.context.avm1.pop();
         let object_val = self.context.avm1.pop();
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize;
+        let num_args = self.context.avm1.pop().coerce_to_u32(self)? as usize;
+        let num_args = num_args.min(self.context.avm1.stack.len());
         let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
@@ -1699,19 +1718,32 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         }
 
         let object = object_val.coerce_to_object(self);
-        let constructor = object.get(&method_name.coerce_to_string(self)?, self)?;
-        if let Value::Object(constructor) = constructor {
-            //TODO: What happens if you `ActionNewMethod` without a method name?
-            let this = constructor.construct(self, &args)?;
-            self.context.avm1.push(this);
+
+        let method_name = if method_name == Value::Undefined {
+            "".into()
         } else {
-            avm_warn!(
-                self,
-                "Tried to construct with non-object constructor {:?}",
-                constructor
-            );
-            self.context.avm1.push(Value::Undefined);
-        }
+            method_name.coerce_to_string(self)?
+        };
+
+        let result = if method_name.is_empty() {
+            // Undefined/empty method name; construct `this` as a function.
+            object.construct(self, &args)?
+        } else {
+            let constructor = object.get(&method_name.as_str(), self)?;
+            if let Value::Object(constructor) = constructor {
+                // Construct `this[method_name]`.
+                constructor.construct(self, &args)?
+            } else {
+                avm_warn!(
+                    self,
+                    "Tried to construct with non-object constructor {:?}",
+                    constructor
+                );
+                Value::Undefined
+            }
+        };
+
+        self.context.avm1.push(result);
 
         self.continue_if_base_clip_exists()
     }
@@ -1719,7 +1751,8 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     fn action_new_object(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let fn_name_val = self.context.avm1.pop();
         let fn_name = fn_name_val.coerce_to_string(self)?;
-        let num_args = self.context.avm1.pop().coerce_to_f64(self)? as usize;
+        let num_args = self.context.avm1.pop().coerce_to_u32(self)? as usize;
+        let num_args = num_args.min(self.context.avm1.stack.len());
         let mut args = Vec::with_capacity(num_args);
         for _ in 0..num_args {
             args.push(self.context.avm1.pop());
