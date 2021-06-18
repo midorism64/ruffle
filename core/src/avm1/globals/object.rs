@@ -3,11 +3,27 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::property::Attribute;
+use crate::avm1::property_decl::{define_properties_on, Declaration};
 use crate::avm1::{Object, ScriptObject, TObject, Value};
 use crate::avm_warn;
 use crate::display_object::TDisplayObject;
 use gc_arena::MutationContext;
 use std::borrow::Cow;
+
+const PROTO_DECLS: &[Declaration] = declare_properties! {
+    "addProperty" => method(add_property; DONT_ENUM | DONT_DELETE);
+    "hasOwnProperty" => method(has_own_property; DONT_ENUM | DONT_DELETE);
+    "isPropertyEnumerable" => method(is_property_enumerable; DONT_DELETE | DONT_ENUM);
+    "isPrototypeOf" => method(is_prototype_of; DONT_ENUM | DONT_DELETE);
+    "toString" => method(to_string; DONT_ENUM | DONT_DELETE);
+    "valueOf" => method(value_of; DONT_ENUM | DONT_DELETE);
+    "watch" => method(watch; DONT_ENUM | DONT_DELETE);
+    "unwatch" => method(unwatch; DONT_ENUM | DONT_DELETE);
+};
+
+const OBJECT_DECLS: &[Declaration] = declare_properties! {
+    "registerClass" => method(register_class; DONT_ENUM | DONT_DELETE | READ_ONLY);
+};
 
 /// Implements `Object` constructor
 pub fn constructor<'gc>(
@@ -55,7 +71,6 @@ pub fn add_property<'gc>(
             if let Value::Object(set) = setter {
                 this.add_property_with_case(
                     activation,
-                    activation.context.gc_context,
                     &name,
                     get.to_owned(),
                     Some(set.to_owned()),
@@ -64,7 +79,6 @@ pub fn add_property<'gc>(
             } else if let Value::Null = setter {
                 this.add_property_with_case(
                     activation,
-                    activation.context.gc_context,
                     &name,
                     get.to_owned(),
                     None,
@@ -196,13 +210,7 @@ fn watch<'gc>(
     }
     let user_data = args.get(2).cloned().unwrap_or(Value::Undefined);
 
-    this.set_watcher(
-        activation,
-        activation.context.gc_context,
-        Cow::Borrowed(&name),
-        callback,
-        user_data,
-    );
+    this.set_watcher(activation, Cow::Borrowed(&name), callback, user_data);
 
     Ok(true.into())
 }
@@ -219,11 +227,7 @@ fn unwatch<'gc>(
         return Ok(false.into());
     };
 
-    let result = this.remove_watcher(
-        activation,
-        activation.context.gc_context,
-        Cow::Borrowed(&name),
-    );
+    let result = this.remove_watcher(activation, Cow::Borrowed(&name));
 
     Ok(result.into())
 }
@@ -242,62 +246,8 @@ pub fn fill_proto<'gc>(
     object_proto: Object<'gc>,
     fn_proto: Object<'gc>,
 ) {
-    object_proto.as_script_object().unwrap().force_set_function(
-        "addProperty",
-        add_property,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object_proto.as_script_object().unwrap().force_set_function(
-        "hasOwnProperty",
-        has_own_property,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object_proto.as_script_object().unwrap().force_set_function(
-        "isPropertyEnumerable",
-        is_property_enumerable,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object_proto.as_script_object().unwrap().force_set_function(
-        "isPrototypeOf",
-        is_prototype_of,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object_proto.as_script_object().unwrap().force_set_function(
-        "toString",
-        to_string,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object_proto.as_script_object().unwrap().force_set_function(
-        "valueOf",
-        value_of,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object_proto.as_script_object().unwrap().force_set_function(
-        "watch",
-        watch,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object_proto.as_script_object().unwrap().force_set_function(
-        "unwatch",
-        unwatch,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
+    let object = object_proto.as_script_object().unwrap();
+    define_properties_on(PROTO_DECLS, gc_context, object, fn_proto);
 }
 
 /// Implements `ASSetPropFlags`.
@@ -397,15 +347,7 @@ pub fn create_object_object<'gc>(
         Some(fn_proto),
         proto,
     );
-    let mut object = object_function.as_script_object().unwrap();
-
-    object.force_set_function(
-        "registerClass",
-        register_class,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
+    let object = object_function.as_script_object().unwrap();
+    define_properties_on(OBJECT_DECLS, gc_context, object, fn_proto);
     object_function
 }

@@ -1,11 +1,9 @@
-use crate::backend::render::ShapeHandle;
+use crate::backend::render::{BitmapInfo, BitmapSource, ShapeHandle};
 use crate::bounding_box::BoundingBox;
 use crate::context::RenderContext;
 use crate::shape_utils::{DistilledShape, DrawCommand, DrawPath};
-use crate::tag_utils::SwfMovie;
 use gc_arena::Collect;
 use std::cell::Cell;
-use std::sync::Arc;
 use swf::{FillStyle, LineStyle, Twips};
 
 #[derive(Clone, Debug, Collect)]
@@ -17,6 +15,7 @@ pub struct Drawing {
     dirty: Cell<bool>,
     fills: Vec<(FillStyle, Vec<DrawCommand>)>,
     lines: Vec<(LineStyle, Vec<DrawCommand>)>,
+    bitmaps: Vec<BitmapInfo>,
     current_fill: Option<(FillStyle, Vec<DrawCommand>)>,
     current_line: Option<(LineStyle, Vec<DrawCommand>)>,
     cursor: (Twips, Twips),
@@ -37,9 +36,10 @@ impl Drawing {
             dirty: Cell::new(false),
             fills: Vec::new(),
             lines: Vec::new(),
+            bitmaps: Vec::new(),
             current_fill: None,
             current_line: None,
-            cursor: (Twips::zero(), Twips::zero()),
+            cursor: (Twips::ZERO, Twips::ZERO),
         }
     }
 
@@ -51,9 +51,10 @@ impl Drawing {
             dirty: Cell::new(true),
             fills: Vec::new(),
             lines: Vec::new(),
+            bitmaps: Vec::new(),
             current_fill: None,
             current_line: None,
-            cursor: (Twips::zero(), Twips::zero()),
+            cursor: (Twips::ZERO, Twips::ZERO),
         };
 
         let shape = DistilledShape::from(shape);
@@ -111,10 +112,11 @@ impl Drawing {
         self.current_line = None;
         self.fills.clear();
         self.lines.clear();
+        self.bitmaps.clear();
         self.edge_bounds = BoundingBox::default();
         self.shape_bounds = BoundingBox::default();
         self.dirty.set(true);
-        self.cursor = (Twips::zero(), Twips::zero());
+        self.cursor = (Twips::ZERO, Twips::ZERO);
     }
 
     pub fn set_line_style(&mut self, style: Option<LineStyle>) {
@@ -139,19 +141,19 @@ impl Drawing {
         let stroke_width = if let Some((style, _)) = &self.current_line {
             style.width
         } else {
-            Twips::zero()
+            Twips::ZERO
         };
 
         match command {
             DrawCommand::MoveTo { .. } => {}
             DrawCommand::LineTo { .. } => {
                 stretch_bounding_box(&mut self.shape_bounds, &command, stroke_width);
-                stretch_bounding_box(&mut self.edge_bounds, &command, Twips::zero());
+                stretch_bounding_box(&mut self.edge_bounds, &command, Twips::ZERO);
                 include_last = true;
             }
             DrawCommand::CurveTo { .. } => {
                 stretch_bounding_box(&mut self.shape_bounds, &command, stroke_width);
-                stretch_bounding_box(&mut self.edge_bounds, &command, Twips::zero());
+                stretch_bounding_box(&mut self.edge_bounds, &command, Twips::ZERO);
                 include_last = true;
             }
         }
@@ -172,7 +174,7 @@ impl Drawing {
                 .and_then(|(_, commands)| commands.last())
             {
                 stretch_bounding_box(&mut self.shape_bounds, command, stroke_width);
-                stretch_bounding_box(&mut self.edge_bounds, command, Twips::zero());
+                stretch_bounding_box(&mut self.edge_bounds, command, Twips::ZERO);
             }
 
             if let Some(command) = self
@@ -181,14 +183,20 @@ impl Drawing {
                 .and_then(|(_, commands)| commands.last())
             {
                 stretch_bounding_box(&mut self.shape_bounds, command, stroke_width);
-                stretch_bounding_box(&mut self.edge_bounds, command, Twips::zero());
+                stretch_bounding_box(&mut self.edge_bounds, command, Twips::ZERO);
             }
         }
 
         self.dirty.set(true);
     }
 
-    pub fn render(&self, context: &mut RenderContext, movie: Option<Arc<SwfMovie>>) {
+    pub fn add_bitmap(&mut self, bitmap: BitmapInfo) -> u16 {
+        let id = self.bitmaps.len() as u16;
+        self.bitmaps.push(bitmap);
+        id
+    }
+
+    pub fn render(&self, context: &mut RenderContext) {
         if self.dirty.get() {
             self.dirty.set(false);
             let mut paths = Vec::new();
@@ -231,13 +239,11 @@ impl Drawing {
                 edge_bounds: self.edge_bounds.clone(),
                 id: 0,
             };
-            let library = movie.and_then(|m| context.library.library_for_movie(m));
-
             if let Some(handle) = self.render_handle.get() {
-                context.renderer.replace_shape(shape, library, handle);
+                context.renderer.replace_shape(shape, self, handle);
             } else {
                 self.render_handle
-                    .set(Some(context.renderer.register_shape(shape, library)));
+                    .set(Some(context.renderer.register_shape(shape, self)));
             }
         }
 
@@ -252,7 +258,7 @@ impl Drawing {
         self.shape_bounds.clone()
     }
 
-    pub fn hit_test(&self, point: (Twips, Twips), local_matrix: &swf::Matrix) -> bool {
+    pub fn hit_test(&self, point: (Twips, Twips), local_matrix: &crate::matrix::Matrix) -> bool {
         use crate::shape_utils;
         for path in &self.fills {
             if shape_utils::draw_command_fill_hit_test(&path.1, point) {
@@ -277,6 +283,12 @@ impl Drawing {
         }
 
         false
+    }
+}
+
+impl BitmapSource for Drawing {
+    fn bitmap(&self, id: u16) -> Option<BitmapInfo> {
+        self.bitmaps.get(id as usize).cloned()
     }
 }
 

@@ -375,7 +375,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             .get_property(receiver, &name, self)?
             .coerce_to_object(self)?;
 
-        function.call(Some(receiver), &args, self, Some(base_proto))
+        function.call(Some(receiver), args, self, Some(base_proto))
     }
 
     /// Attempts to lock the activation frame for execution.
@@ -2404,11 +2404,15 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     fn op_instance_of(&mut self) -> Result<FrameControl<'gc>, Error> {
         let type_object = self.context.avm2.pop().coerce_to_object(self)?;
-        let value = self.context.avm2.pop().coerce_to_object(self)?;
+        let value = self.context.avm2.pop().coerce_to_object(self).ok();
 
-        let is_instance_of = value.is_instance_of(self, type_object, false)?;
+        if let Some(value) = value {
+            let is_instance_of = value.is_instance_of(self, type_object, false)?;
 
-        self.context.avm2.push(is_instance_of);
+            self.context.avm2.push(is_instance_of);
+        } else {
+            self.context.avm2.push(false);
+        }
 
         Ok(FrameControl::Continue)
     }
@@ -2785,7 +2789,6 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         Ok(FrameControl::Continue)
     }
 
-    #[allow(unused_variables)]
     #[cfg(avm_debug)]
     fn op_debug(
         &mut self,
@@ -2806,19 +2809,17 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         Ok(FrameControl::Continue)
     }
 
-    #[allow(unused_variables)]
     #[cfg(not(avm_debug))]
     fn op_debug(
         &mut self,
-        method: Gc<'gc, BytecodeMethod<'gc>>,
-        is_local_register: bool,
-        register_name: Index<String>,
-        register: u8,
+        _method: Gc<'gc, BytecodeMethod<'gc>>,
+        _is_local_register: bool,
+        _register_name: Index<String>,
+        _register: u8,
     ) -> Result<FrameControl<'gc>, Error> {
         Ok(FrameControl::Continue)
     }
 
-    #[allow(unused_variables)]
     #[cfg(avm_debug)]
     fn op_debug_file(
         &mut self,
@@ -2832,17 +2833,15 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         Ok(FrameControl::Continue)
     }
 
-    #[allow(unused_variables)]
     #[cfg(not(avm_debug))]
     fn op_debug_file(
         &mut self,
-        method: Gc<'gc, BytecodeMethod<'gc>>,
-        file_name: Index<String>,
+        _method: Gc<'gc, BytecodeMethod<'gc>>,
+        _file_name: Index<String>,
     ) -> Result<FrameControl<'gc>, Error> {
         Ok(FrameControl::Continue)
     }
 
-    #[allow(unused_variables)]
     fn op_debug_line(&mut self, line_num: u32) -> Result<FrameControl<'gc>, Error> {
         avm_debug!(self.avm2(), "Line: {}", line_num);
 

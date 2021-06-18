@@ -9,20 +9,19 @@ use crate::events::{ButtonKeyCode, ClipEvent, ClipEventResult};
 use crate::prelude::*;
 use crate::tag_utils::{SwfMovie, SwfSlice};
 use crate::types::{Degrees, Percent};
-use crate::vminterface::Instantiator;
+use crate::vminterface::{AvmType, Instantiator};
 use gc_arena::{Collect, GcCell, MutationContext};
 use std::collections::BTreeMap;
-use std::convert::TryFrom;
 use std::sync::Arc;
 use swf::ButtonActionCondition;
 
 #[derive(Clone, Debug, Collect, Copy)]
 #[collect(no_drop)]
-pub struct Button<'gc>(GcCell<'gc, ButtonData<'gc>>);
+pub struct Avm1Button<'gc>(GcCell<'gc, Avm1ButtonData<'gc>>);
 
 #[derive(Clone, Debug, Collect)]
 #[collect(no_drop)]
-pub struct ButtonData<'gc> {
+pub struct Avm1ButtonData<'gc> {
     base: DisplayObjectBase<'gc>,
     static_data: GcCell<'gc, ButtonStatic>,
     state: ButtonState,
@@ -36,7 +35,7 @@ pub struct ButtonData<'gc> {
     use_hand_cursor: bool,
 }
 
-impl<'gc> Button<'gc> {
+impl<'gc> Avm1Button<'gc> {
     pub fn from_swf_tag(
         button: &swf::Button,
         source_movie: &SwfSlice,
@@ -55,9 +54,7 @@ impl<'gc> Button<'gc> {
                     actions.push(ButtonAction {
                         action_data: action_data.clone(),
                         condition: ButtonActionCondition::from_bits_truncate(bit),
-                        key_code: action
-                            .key_code
-                            .and_then(|k| ButtonKeyCode::try_from(k).ok()),
+                        key_code: action.key_code.and_then(ButtonKeyCode::from_u8),
                     });
                 }
                 bit <<= 1;
@@ -75,9 +72,9 @@ impl<'gc> Button<'gc> {
             over_to_up_sound: None,
         };
 
-        Button(GcCell::allocate(
+        Avm1Button(GcCell::allocate(
             gc_context,
-            ButtonData {
+            Avm1ButtonData {
                 base: Default::default(),
                 static_data: GcCell::allocate(gc_context, static_data),
                 container: ChildContainer::new(),
@@ -180,7 +177,7 @@ impl<'gc> Button<'gc> {
                 };
 
                 // Set transform of child (and modify previous child if it already existed)
-                child.set_matrix(context.gc_context, &record.matrix);
+                child.set_matrix(context.gc_context, &record.matrix.into());
                 child.set_color_transform(
                     context.gc_context,
                     &record.color_transform.clone().into(),
@@ -232,7 +229,7 @@ impl<'gc> Button<'gc> {
     }
 }
 
-impl<'gc> TDisplayObject<'gc> for Button<'gc> {
+impl<'gc> TDisplayObject<'gc> for Avm1Button<'gc> {
     impl_display_object!(base);
 
     fn id(&self) -> CharacterId {
@@ -252,6 +249,12 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
         run_frame: bool,
     ) {
         self.set_default_instance_name(context);
+
+        if self.avm_type() == AvmType::Avm1 {
+            context
+                .avm1
+                .add_to_exec_list(context.gc_context, (*self).into());
+        }
 
         let mut mc = self.0.write(context.gc_context);
         if mc.object.is_none() {
@@ -291,7 +294,7 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
                         .instantiate_by_id(record.id, context.gc_context)
                     {
                         Ok(child) => {
-                            child.set_matrix(context.gc_context, &record.matrix);
+                            child.set_matrix(context.gc_context, &record.matrix.into());
                             child.set_parent(context.gc_context, Some(self_display_object));
                             child.set_depth(context.gc_context, record.depth.into());
                             new_children.push((child, record.depth.into()));
@@ -318,10 +321,6 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
                     .insert(depth, child);
             }
         }
-
-        for child in self.iter_execution_list() {
-            child.run_frame(context);
-        }
     }
 
     fn render_self(&self, context: &mut RenderContext<'_, 'gc>) {
@@ -339,7 +338,7 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
         point: (Twips, Twips),
         options: HitTestOptions,
     ) -> bool {
-        for child in self.iter_execution_list() {
+        for child in self.iter_render_list() {
             if child.hit_test_shape(context, point, options) {
                 return true;
             }
@@ -351,13 +350,13 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
     fn mouse_pick(
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
-        self_node: DisplayObject<'gc>,
         point: (Twips, Twips),
+        require_button_mode: bool,
     ) -> Option<DisplayObject<'gc>> {
         // The button is hovered if the mouse is over any child nodes.
         if self.visible() {
             for child in self.iter_render_list().rev() {
-                let result = child.mouse_pick(context, child, point);
+                let result = child.mouse_pick(context, point, require_button_mode);
                 if result.is_some() {
                     return result;
                 }
@@ -365,7 +364,7 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
 
             for child in self.0.read().hit_area.values() {
                 if child.hit_test_shape(context, point, HitTestOptions::MOUSE_PICK) {
-                    return Some(self_node);
+                    return Some((*self).into());
                 }
             }
         }
@@ -388,7 +387,7 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
             .unwrap_or(Value::Undefined)
     }
 
-    fn as_button(&self) -> Option<Self> {
+    fn as_avm1_button(&self) -> Option<Self> {
         Some(*self)
     }
 
@@ -417,68 +416,67 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
         }
 
         if event.propagates() {
-            for child in self.iter_execution_list() {
+            for child in self.iter_render_list() {
                 if child.handle_clip_event(context, event) == ClipEventResult::Handled {
                     return ClipEventResult::Handled;
                 }
             }
         }
 
-        let mut handled = ClipEventResult::NotHandled;
         let self_display_object = (*self).into();
         let mut write = self.0.write(context.gc_context);
 
         // Translate the clip event to a button event, based on how the button state changes.
-        let cur_state = write.state;
-        let new_state = match event {
-            ClipEvent::RollOut => ButtonState::Up,
-            ClipEvent::RollOver => ButtonState::Over,
-            ClipEvent::Press => ButtonState::Down,
-            ClipEvent::Release => ButtonState::Over,
+        let static_data = write.static_data;
+        let static_data = static_data.read();
+        let (new_state, condition, sound) = match event {
+            ClipEvent::DragOut => (
+                ButtonState::Over,
+                ButtonActionCondition::OVER_DOWN_TO_OUT_DOWN,
+                None,
+            ),
+            ClipEvent::DragOver => (
+                ButtonState::Down,
+                ButtonActionCondition::OUT_DOWN_TO_OVER_DOWN,
+                None,
+            ),
+            ClipEvent::Press => (
+                ButtonState::Down,
+                ButtonActionCondition::OVER_UP_TO_OVER_DOWN,
+                static_data.over_to_down_sound.as_ref(),
+            ),
+            ClipEvent::Release => (
+                ButtonState::Over,
+                ButtonActionCondition::OVER_DOWN_TO_OVER_UP,
+                static_data.down_to_over_sound.as_ref(),
+            ),
+            ClipEvent::ReleaseOutside => (
+                ButtonState::Up,
+                ButtonActionCondition::OUT_DOWN_TO_IDLE,
+                static_data.over_to_up_sound.as_ref(),
+            ),
+            ClipEvent::RollOut => (
+                ButtonState::Up,
+                ButtonActionCondition::OVER_UP_TO_IDLE,
+                static_data.over_to_up_sound.as_ref(),
+            ),
+            ClipEvent::RollOver => (
+                ButtonState::Over,
+                ButtonActionCondition::IDLE_TO_OVER_UP,
+                static_data.up_to_over_sound.as_ref(),
+            ),
             ClipEvent::KeyPress { key_code } => {
-                handled = write.run_actions(
+                return write.run_actions(
                     context,
                     swf::ButtonActionCondition::KEY_PRESS,
                     Some(key_code),
                 );
-                cur_state
             }
             _ => return ClipEventResult::NotHandled,
         };
 
-        match (cur_state, new_state) {
-            (ButtonState::Up, ButtonState::Over) => {
-                write.run_actions(context, swf::ButtonActionCondition::IDLE_TO_OVER_UP, None);
-                write.play_sound(context, write.static_data.read().up_to_over_sound.as_ref());
-            }
-            (ButtonState::Over, ButtonState::Up) => {
-                write.run_actions(context, swf::ButtonActionCondition::OVER_UP_TO_IDLE, None);
-                write.play_sound(context, write.static_data.read().over_to_up_sound.as_ref());
-            }
-            (ButtonState::Over, ButtonState::Down) => {
-                write.run_actions(
-                    context,
-                    swf::ButtonActionCondition::OVER_UP_TO_OVER_DOWN,
-                    None,
-                );
-                write.play_sound(
-                    context,
-                    write.static_data.read().over_to_down_sound.as_ref(),
-                );
-            }
-            (ButtonState::Down, ButtonState::Over) => {
-                write.run_actions(
-                    context,
-                    swf::ButtonActionCondition::OVER_DOWN_TO_OVER_UP,
-                    None,
-                );
-                write.play_sound(
-                    context,
-                    write.static_data.read().down_to_over_sound.as_ref(),
-                );
-            }
-            _ => (),
-        };
+        write.run_actions(context, condition, None);
+        write.play_sound(context, sound);
 
         // Queue ActionScript-defined event handlers after the SWF defined ones.
         // (e.g., clip.onRelease = foo).
@@ -501,7 +499,7 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
             self.set_state(context, new_state);
         }
 
-        handled
+        ClipEventResult::NotHandled
     }
 
     fn is_focusable(&self) -> bool {
@@ -527,11 +525,11 @@ impl<'gc> TDisplayObject<'gc> for Button<'gc> {
     }
 }
 
-impl<'gc> TDisplayObjectContainer<'gc> for Button<'gc> {
+impl<'gc> TDisplayObjectContainer<'gc> for Avm1Button<'gc> {
     impl_display_object_container!(container);
 }
 
-impl<'gc> ButtonData<'gc> {
+impl<'gc> Avm1ButtonData<'gc> {
     fn play_sound(
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,

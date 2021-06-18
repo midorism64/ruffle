@@ -20,8 +20,9 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use swf::Fixed8;
 
+mod avm1_button;
+mod avm2_button;
 mod bitmap;
-mod button;
 mod container;
 mod edit_text;
 mod graphic;
@@ -37,13 +38,14 @@ pub use crate::display_object::container::{
     DisplayObjectContainer, Lists, TDisplayObjectContainer,
 };
 use crate::events::{ClipEvent, ClipEventResult};
+pub use avm1_button::Avm1Button;
+pub use avm2_button::{Avm2Button, ButtonTracking};
 pub use bitmap::Bitmap;
-pub use button::Button;
 pub use edit_text::{AutoSizeMode, EditText, TextSelection};
 pub use graphic::Graphic;
 pub use morph_shape::{MorphShape, MorphShapeStatic};
 pub use movie_clip::{MovieClip, Scene};
-pub use stage::{Stage, StageAlign, StageScaleMode};
+pub use stage::{Stage, StageAlign, StageQuality, StageScaleMode};
 pub use text::Text;
 pub use video::Video;
 
@@ -69,11 +71,15 @@ pub struct DisplayObjectBase<'gc> {
     scale_y: Percent,
     skew: f64,
 
-    /// The previous sibling of this display object in order of execution.
-    prev_sibling: Option<DisplayObject<'gc>>,
+    /// The previous display object in order of AVM1 execution.
+    ///
+    /// `None` in an AVM2 movie.
+    prev_avm1_clip: Option<DisplayObject<'gc>>,
 
-    /// The next sibling of this display object in order of execution.
-    next_sibling: Option<DisplayObject<'gc>>,
+    /// The next display object in order of execution.
+    ///
+    /// `None` in an AVM2 movie.
+    next_avm1_clip: Option<DisplayObject<'gc>>,
 
     /// The sound transform of sounds playing via this display object.
     sound_transform: SoundTransform,
@@ -101,8 +107,8 @@ impl<'gc> Default for DisplayObjectBase<'gc> {
             scale_x: Percent::from_unit(1.0),
             scale_y: Percent::from_unit(1.0),
             skew: 0.0,
-            prev_sibling: None,
-            next_sibling: None,
+            prev_avm1_clip: None,
+            next_avm1_clip: None,
             masker: None,
             maskee: None,
             sound_transform: Default::default(),
@@ -318,7 +324,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.clip_depth = depth;
     }
 
-    fn avm2_parent(&self) -> Option<DisplayObject<'gc>> {
+    fn parent(&self) -> Option<DisplayObject<'gc>> {
         self.parent
     }
 
@@ -326,20 +332,20 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.parent = parent;
     }
 
-    fn prev_sibling(&self) -> Option<DisplayObject<'gc>> {
-        self.prev_sibling
+    fn prev_avm1_clip(&self) -> Option<DisplayObject<'gc>> {
+        self.prev_avm1_clip
     }
 
-    fn set_prev_sibling(&mut self, node: Option<DisplayObject<'gc>>) {
-        self.prev_sibling = node;
+    fn set_prev_avm1_clip(&mut self, node: Option<DisplayObject<'gc>>) {
+        self.prev_avm1_clip = node;
     }
 
-    fn next_sibling(&self) -> Option<DisplayObject<'gc>> {
-        self.next_sibling
+    fn next_avm1_clip(&self) -> Option<DisplayObject<'gc>> {
+        self.next_avm1_clip
     }
 
-    fn set_next_sibling(&mut self, node: Option<DisplayObject<'gc>>) {
-        self.next_sibling = node;
+    fn set_next_avm1_clip(&mut self, node: Option<DisplayObject<'gc>>) {
+        self.next_avm1_clip = node;
     }
 
     fn removed(&self) -> bool {
@@ -364,6 +370,14 @@ impl<'gc> DisplayObjectBase<'gc> {
 
     fn set_visible(&mut self, value: bool) {
         self.flags.set(DisplayObjectFlags::VISIBLE, value);
+    }
+
+    fn is_root(&self) -> bool {
+        self.flags.contains(DisplayObjectFlags::IS_ROOT)
+    }
+
+    fn set_is_root(&mut self, value: bool) {
+        self.flags.set(DisplayObjectFlags::IS_ROOT, value);
     }
 
     fn lock_root(&self) -> bool {
@@ -466,7 +480,8 @@ pub fn render_base<'gc>(this: DisplayObject<'gc>, context: &mut RenderContext<'_
     pub enum DisplayObject<'gc> {
         Stage(Stage<'gc>),
         Bitmap(Bitmap<'gc>),
-        Button(Button<'gc>),
+        Avm1Button(Avm1Button<'gc>),
+        Avm2Button(Avm2Button<'gc>),
         EditText(EditText<'gc>),
         Graphic(Graphic<'gc>),
         MorphShape(MorphShape<'gc>),
@@ -514,7 +529,7 @@ pub trait TDisplayObject<'gc>:
         let mut bounds = self.self_bounds().transform(matrix);
 
         if let Some(ctr) = self.as_container() {
-            for child in ctr.iter_execution_list() {
+            for child in ctr.iter_render_list() {
                 let matrix = *matrix * *child.matrix();
                 bounds.union(&child.bounds_with_transform(&matrix));
             }
@@ -543,6 +558,13 @@ pub trait TDisplayObject<'gc>:
         let mut node = self.parent();
         let mut matrix = *self.matrix();
         while let Some(display_object) = node {
+            // TODO: We don't want to include the stage transform because it includes the scale
+            // mode and alignemnt transform, but the AS APIs expect "global" to be relative to the
+            // Stage, not final view coordinates.
+            // I suspect we want this to include the stage transform eventually.
+            if display_object.as_stage().is_some() {
+                break;
+            }
             matrix = *display_object.matrix() * matrix;
             node = display_object.parent();
         }
@@ -723,7 +745,7 @@ pub trait TDisplayObject<'gc>:
 
     /// Returns the dot-syntax path to this display object, e.g. `_level0.foo.clip`
     fn path(&self) -> String {
-        if let Some(parent) = self.parent() {
+        if let Some(parent) = self.avm1_parent() {
             let mut path = parent.path();
             path.push('.');
             path.push_str(&*self.name());
@@ -737,7 +759,7 @@ pub trait TDisplayObject<'gc>:
     /// Returned by the `_target` property in AVM1.
     fn slash_path(&self) -> String {
         fn build_slash_path(object: DisplayObject<'_>) -> String {
-            if let Some(parent) = object.parent() {
+            if let Some(parent) = object.avm1_parent() {
                 let mut path = build_slash_path(parent);
                 path.push('/');
                 path.push_str(&*object.name());
@@ -754,7 +776,7 @@ pub trait TDisplayObject<'gc>:
             }
         }
 
-        if self.parent().is_some() {
+        if self.avm1_parent().is_some() {
             build_slash_path((*self).into())
         } else {
             // _target of _level0 should just be '/'.
@@ -767,30 +789,38 @@ pub trait TDisplayObject<'gc>:
 
     /// Retrieve the parent of this display object.
     ///
-    /// This version of the function allows access to the `Stage`; which is
-    /// only suitable for code aware of AVM2's altered display list hierarchy.
-    /// For AVM1 code, please call `parent`.
-    fn avm2_parent(&self) -> Option<DisplayObject<'gc>>;
+    /// This version of the function merely exposes the display object parent,
+    /// without any further filtering.
+    fn parent(&self) -> Option<DisplayObject<'gc>>;
 
     /// Set the parent of this display object.
     fn set_parent(&self, gc_context: MutationContext<'gc, '_>, parent: Option<DisplayObject<'gc>>);
 
     /// Retrieve the parent of this display object.
     ///
-    /// This version of the function disallows access to the `Stage`; if you
-    /// want to be able to access the stage, please call `avm2_parent`.
-    fn parent(&self) -> Option<DisplayObject<'gc>> {
-        self.avm2_parent().filter(|p| p.as_stage().is_none())
+    /// This version of the function implements the concept of parenthood as
+    /// seen in AVM1. Notably, it disallows access to the `Stage`; for an
+    /// unfiltered concept of parent, use the `parent` method.
+    fn avm1_parent(&self) -> Option<DisplayObject<'gc>> {
+        self.parent().filter(|p| p.as_stage().is_none())
     }
 
-    fn prev_sibling(&self) -> Option<DisplayObject<'gc>>;
-    fn set_prev_sibling(
+    /// Retrieve the parent of this display object.
+    ///
+    /// This version of the function implements the concept of parenthood as
+    /// seen in AVM2. Notably, it disallows access to non-container parents.
+    fn avm2_parent(&self) -> Option<DisplayObject<'gc>> {
+        self.parent().filter(|p| p.as_container().is_some())
+    }
+
+    fn prev_avm1_clip(&self) -> Option<DisplayObject<'gc>>;
+    fn set_prev_avm1_clip(
         &self,
         gc_context: MutationContext<'gc, '_>,
         node: Option<DisplayObject<'gc>>,
     );
-    fn next_sibling(&self) -> Option<DisplayObject<'gc>>;
-    fn set_next_sibling(
+    fn next_avm1_clip(&self) -> Option<DisplayObject<'gc>>;
+    fn set_next_avm1_clip(
         &self,
         gc_context: MutationContext<'gc, '_>,
         node: Option<DisplayObject<'gc>>,
@@ -822,6 +852,12 @@ pub trait TDisplayObject<'gc>:
     /// Invisible objects are not rendered, but otherwise continue to exist normally.
     /// Returned by the `_visible`/`visible` ActionScript properties.
     fn set_visible(&self, gc_context: MutationContext<'gc, '_>, value: bool);
+
+    /// Whether this display object represents the root of loaded content.
+    fn is_root(&self) -> bool;
+
+    /// Sets whether this display object represents the root of loaded content.
+    fn set_is_root(&self, gc_context: MutationContext<'gc, '_>, value: bool);
 
     /// The sound transform for sounds played inside this display object.
     fn sound_transform(&self) -> Ref<SoundTransform>;
@@ -918,8 +954,23 @@ pub trait TDisplayObject<'gc>:
     ///    as properties on the class
     fn construct_frame(&self, _context: &mut UpdateContext<'_, 'gc, '_>) {}
 
-    /// Execute all other timeline actions on this object and it's children.
+    /// Execute all other timeline actions on this object.
     fn run_frame(&self, _context: &mut UpdateContext<'_, 'gc, '_>) {}
+
+    /// Execute all other timeline actions on this object and it's children.
+    ///
+    /// AVM2 operates recursively through children, so this also instructs
+    /// children to run a frame.
+    fn run_frame_avm2(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
+        // Children run first.
+        if let Some(container) = self.as_container() {
+            for child in container.iter_render_list() {
+                child.run_frame_avm2(context);
+            }
+        }
+
+        self.run_frame(context);
+    }
 
     /// Emit an `frameConstructed` event on this DisplayObject and any children it
     /// may have.
@@ -941,7 +992,7 @@ pub trait TDisplayObject<'gc>:
     /// Run any frame scripts (if they exist and this object needs to run them).
     fn run_frame_scripts(self, context: &mut UpdateContext<'_, 'gc, '_>) {
         if let Some(container) = self.as_container() {
-            for child in container.iter_execution_list() {
+            for child in container.iter_render_list() {
                 child.run_frame_scripts(context);
             }
         }
@@ -972,7 +1023,7 @@ pub trait TDisplayObject<'gc>:
     fn unload(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
         // Unload children.
         if let Some(ctr) = self.as_container() {
-            for child in ctr.iter_execution_list() {
+            for child in ctr.iter_render_list() {
                 child.unload(context);
             }
         }
@@ -996,7 +1047,10 @@ pub trait TDisplayObject<'gc>:
     fn as_stage(&self) -> Option<Stage<'gc>> {
         None
     }
-    fn as_button(&self) -> Option<Button<'gc>> {
+    fn as_avm1_button(&self) -> Option<Avm1Button<'gc>> {
+        None
+    }
+    fn as_avm2_button(&self) -> Option<Avm2Button<'gc>> {
         None
     }
     fn as_movie_clip(&self) -> Option<MovieClip<'gc>> {
@@ -1024,10 +1078,10 @@ pub trait TDisplayObject<'gc>:
         placing_movie: Option<Arc<SwfMovie>>,
         place_object: &swf::PlaceObject,
     ) {
-        // PlaceObject tags only apply if this onject has not been dynamically moved by AS code.
+        // PlaceObject tags only apply if this object has not been dynamically moved by AS code.
         if !self.transformed_by_script() {
-            if let Some(matrix) = &place_object.matrix {
-                self.set_matrix(context.gc_context, &matrix);
+            if let Some(matrix) = place_object.matrix {
+                self.set_matrix(context.gc_context, &matrix.into());
             }
             if let Some(color_transform) = &place_object.color_transform {
                 self.set_color_transform(context.gc_context, &color_transform.clone().into());
@@ -1051,18 +1105,20 @@ pub trait TDisplayObject<'gc>:
             if let (Some(clip_actions), Some(clip)) =
                 (&place_object.clip_actions, self.as_movie_clip())
             {
-                // Convert from `swf::ClipAction` to Ruffle's `ClipAction`.
-                use crate::display_object::movie_clip::ClipAction;
+                // Convert from `swf::ClipAction` to Ruffle's `ClipEventHandler`.
+                use crate::display_object::movie_clip::ClipEventHandler;
                 if let Some(placing_movie) = placing_movie {
-                    clip.set_clip_actions(
+                    clip.set_clip_event_handlers(
                         context.gc_context,
                         clip_actions
                             .iter()
                             .cloned()
                             .map(|a| {
-                                ClipAction::from_action_and_movie(a, Arc::clone(&placing_movie))
+                                ClipEventHandler::from_action_and_movie(
+                                    a,
+                                    Arc::clone(&placing_movie),
+                                )
                             })
-                            .flatten()
                             .collect(),
                     );
                 } else {
@@ -1070,27 +1126,18 @@ pub trait TDisplayObject<'gc>:
                     log::error!("No movie when trying to set clip event");
                 }
             }
+            if self.swf_version() >= 11 {
+                if let Some(visible) = place_object.is_visible {
+                    self.set_visible(context.gc_context, visible);
+                }
+            }
             // TODO: Others will go here eventually.
         }
     }
 
-    fn copy_display_properties_from(
-        &self,
-        gc_context: MutationContext<'gc, '_>,
-        other: DisplayObject<'gc>,
-    ) {
-        self.set_matrix(gc_context, &*other.matrix());
-        self.set_color_transform(gc_context, &*other.color_transform());
-        self.set_clip_depth(gc_context, other.clip_depth());
-        self.set_name(gc_context, &*other.name());
-        if let (Some(mut me), Some(other)) = (self.as_morph_shape(), other.as_morph_shape()) {
-            me.set_ratio(gc_context, other.ratio());
-        }
-        // onEnterFrame actions only apply to movie clips.
-        if let (Some(me), Some(other)) = (self.as_movie_clip(), other.as_movie_clip()) {
-            me.set_clip_actions(gc_context, other.clip_actions().iter().cloned().collect());
-        }
-        // TODO: More in here eventually.
+    /// Called when this object should be replaced by a PlaceObject tag.
+    fn replace_with(&self, _context: &mut UpdateContext<'_, 'gc, '_>, _id: CharacterId) {
+        // Noop for most symbols; only shapes can replace their innards with another graphic.
     }
 
     fn object(&self) -> Avm1Value<'gc> {
@@ -1125,11 +1172,12 @@ pub trait TDisplayObject<'gc>:
         self.hit_test_bounds(pos)
     }
 
+    #[allow(unused_variables)]
     fn mouse_pick(
         &self,
-        _context: &mut UpdateContext<'_, 'gc, '_>,
-        _self_node: DisplayObject<'gc>,
-        _pos: (Twips, Twips),
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        pos: (Twips, Twips),
+        require_button_mode: bool,
     ) -> Option<DisplayObject<'gc>> {
         None
     }
@@ -1162,11 +1210,9 @@ pub trait TDisplayObject<'gc>:
     /// Return the VM that this object belongs to.
     ///
     /// This function panics if the display object has no defining movie.
-    fn vm_type(&self, context: &mut UpdateContext<'_, 'gc, '_>) -> AvmType {
+    fn avm_type(&self) -> AvmType {
         let movie = self.movie().unwrap();
-        let library = context.library.library_for_movie_mut(movie);
-
-        library.avm_type()
+        movie.avm_type()
     }
 
     fn instantiate(&self, gc_context: MutationContext<'gc, '_>) -> DisplayObject<'gc>;
@@ -1185,12 +1231,19 @@ pub trait TDisplayObject<'gc>:
     }
 
     /// Obtain the top-most non-Stage parent of the display tree hierarchy, if
-    /// a suitable object exists.
-    fn root(&self, context: &UpdateContext<'_, 'gc, '_>) -> Option<DisplayObject<'gc>> {
+    /// a suitable object exists. If none such object exists, this function
+    /// yields an AVM1 error (which shouldn't happen in normal usage).
+    ///
+    /// This function implements the AVM1 concept of root clips. For the AVM2
+    /// version, see `avm2_root`.
+    fn avm1_root(
+        &self,
+        context: &UpdateContext<'_, 'gc, '_>,
+    ) -> Result<DisplayObject<'gc>, Avm1Error<'gc>> {
         let mut parent = if self.lock_root() {
             None
         } else {
-            self.parent()
+            self.avm1_parent()
         };
 
         while let Some(p) = parent {
@@ -1198,7 +1251,7 @@ pub trait TDisplayObject<'gc>:
                 break;
             }
 
-            let grandparent = p.parent();
+            let grandparent = p.avm1_parent();
 
             if grandparent.is_none() {
                 break;
@@ -1207,19 +1260,59 @@ pub trait TDisplayObject<'gc>:
             parent = grandparent;
         }
 
-        parent.or_else(|| {
-            if let Avm1Value::Object(object) = self.object() {
-                object.as_display_object()
-            } else if let Avm2Value::Object(object) = self.object2() {
-                if self.is_on_stage(context) {
-                    object.as_display_object()
+        parent
+            .ok_or(Avm1Error::InvalidDisplayObjectHierarchy)
+            .or_else(|_| {
+                if let Avm1Value::Object(object) = self.object() {
+                    object
+                        .as_display_object()
+                        .ok_or(Avm1Error::InvalidDisplayObjectHierarchy)
+                } else if let Avm2Value::Object(object) = self.object2() {
+                    if self.is_on_stage(context) {
+                        object
+                            .as_display_object()
+                            .ok_or(Avm1Error::InvalidDisplayObjectHierarchy)
+                    } else {
+                        Err(Avm1Error::InvalidDisplayObjectHierarchy)
+                    }
                 } else {
-                    None
+                    Err(Avm1Error::InvalidDisplayObjectHierarchy)
                 }
-            } else {
-                None
+            })
+    }
+
+    /// Obtain the top-most non-Stage parent of the display tree hierarchy, if
+    /// a suitable object exists.
+    ///
+    /// This function implements the AVM2 concept of root clips. For the AVM1
+    /// version, see `avm1_root`.
+    fn avm2_root(&self, _context: &mut UpdateContext<'_, 'gc, '_>) -> Option<DisplayObject<'gc>> {
+        let mut parent = Some((*self).into());
+        while let Some(p) = parent {
+            if p.is_root() {
+                return parent;
             }
-        })
+            parent = p.parent();
+        }
+        None
+    }
+
+    /// Obtain the root of the display tree hierarchy, if a suitable object
+    /// exists.
+    ///
+    /// This implements the AVM2 concept of `stage`. Notably, it deliberately
+    /// will fail to locate the current player's stage for objects that are not
+    /// rooted to the DisplayObject hierarchy correctly. If you just want to
+    /// access the current player's stage, grab it from the context.
+    fn avm2_stage(&self, _context: &UpdateContext<'_, 'gc, '_>) -> Option<DisplayObject<'gc>> {
+        let mut parent = Some((*self).into());
+        while let Some(p) = parent {
+            if p.as_stage().is_some() {
+                return parent;
+            }
+            parent = p.parent();
+        }
+        None
     }
 
     /// Determine if this display object is currently on the stage.
@@ -1237,20 +1330,6 @@ pub trait TDisplayObject<'gc>:
         DisplayObject::ptr_eq(ancestor, context.stage.into())
     }
 
-    /// Obtain the top-most parent of the display tree hierarchy, or some kind
-    /// of an error.
-    ///
-    /// AVM1 cannot normally access rootless display objects, so this will
-    /// generate an AVM1 runtime error (which might also be unexpected, but
-    /// less unexpected than a panic).
-    fn avm1_root(
-        &self,
-        context: &UpdateContext<'_, 'gc, '_>,
-    ) -> Result<DisplayObject<'gc>, Avm1Error<'gc>> {
-        self.root(context)
-            .ok_or(Avm1Error::InvalidDisplayObjectHierarchy)
-    }
-
     /// Assigns a default instance name `instanceN` to this object.
     fn set_default_instance_name(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
         if self.name().is_empty() {
@@ -1265,10 +1344,7 @@ pub trait TDisplayObject<'gc>:
     /// The default root names change based on the AVM configuration of the
     /// clip; AVM2 clips get `rootN` while AVM1 clips get blank strings.
     fn set_default_root_name(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
-        let movie = self
-            .movie()
-            .expect("All roots should have an associated movie");
-        let vm_type = context.library.library_for_movie_mut(movie).avm_type();
+        let vm_type = self.avm_type();
 
         if matches!(vm_type, AvmType::Avm2) {
             self.set_name(context.gc_context, &format!("root{}", self.depth() + 1));
@@ -1316,13 +1392,13 @@ macro_rules! impl_display_object_sansbounds {
         fn transform(&self) -> std::cell::Ref<crate::transform::Transform> {
             std::cell::Ref::map(self.0.read(), |o| o.$field.transform())
         }
-        fn matrix(&self) -> std::cell::Ref<swf::Matrix> {
+        fn matrix(&self) -> std::cell::Ref<crate::matrix::Matrix> {
             std::cell::Ref::map(self.0.read(), |o| o.$field.matrix())
         }
         fn matrix_mut(
             &self,
             context: gc_arena::MutationContext<'gc, '_>,
-        ) -> std::cell::RefMut<swf::Matrix> {
+        ) -> std::cell::RefMut<crate::matrix::Matrix> {
             std::cell::RefMut::map(self.0.write(context), |o| o.$field.matrix_mut())
         }
         fn color_transform(&self) -> std::cell::Ref<crate::color_transform::ColorTransform> {
@@ -1384,8 +1460,8 @@ macro_rules! impl_display_object_sansbounds {
         ) {
             self.0.write(context).$field.set_clip_depth(depth)
         }
-        fn avm2_parent(&self) -> Option<crate::display_object::DisplayObject<'gc>> {
-            self.0.read().$field.avm2_parent()
+        fn parent(&self) -> Option<crate::display_object::DisplayObject<'gc>> {
+            self.0.read().$field.parent()
         }
         fn set_parent(
             &self,
@@ -1394,25 +1470,25 @@ macro_rules! impl_display_object_sansbounds {
         ) {
             self.0.write(context).$field.set_parent(parent)
         }
-        fn prev_sibling(&self) -> Option<DisplayObject<'gc>> {
-            self.0.read().$field.prev_sibling()
+        fn prev_avm1_clip(&self) -> Option<crate::display_object::DisplayObject<'gc>> {
+            self.0.read().$field.prev_avm1_clip()
         }
-        fn set_prev_sibling(
+        fn set_prev_avm1_clip(
             &self,
             context: gc_arena::MutationContext<'gc, '_>,
-            node: Option<DisplayObject<'gc>>,
+            node: Option<crate::display_object::DisplayObject<'gc>>,
         ) {
-            self.0.write(context).$field.set_prev_sibling(node);
+            self.0.write(context).$field.set_prev_avm1_clip(node);
         }
-        fn next_sibling(&self) -> Option<DisplayObject<'gc>> {
-            self.0.read().$field.next_sibling()
+        fn next_avm1_clip(&self) -> Option<crate::display_object::DisplayObject<'gc>> {
+            self.0.read().$field.next_avm1_clip()
         }
-        fn set_next_sibling(
+        fn set_next_avm1_clip(
             &self,
             context: gc_arena::MutationContext<'gc, '_>,
-            node: Option<DisplayObject<'gc>>,
+            node: Option<crate::display_object::DisplayObject<'gc>>,
         ) {
-            self.0.write(context).$field.set_next_sibling(node);
+            self.0.write(context).$field.set_next_avm1_clip(node);
         }
         fn masker(&self) -> Option<DisplayObject<'gc>> {
             self.0.read().$field.masker()
@@ -1471,6 +1547,12 @@ macro_rules! impl_display_object_sansbounds {
         }
         fn set_visible(&self, context: gc_arena::MutationContext<'gc, '_>, value: bool) {
             self.0.write(context).$field.set_visible(value);
+        }
+        fn is_root(&self) -> bool {
+            self.0.read().$field.is_root()
+        }
+        fn set_is_root(&self, context: gc_arena::MutationContext<'gc, '_>, value: bool) {
+            self.0.write(context).$field.set_is_root(value);
         }
         fn lock_root(&self) -> bool {
             self.0.read().$field.lock_root()
@@ -1544,7 +1626,11 @@ macro_rules! impl_display_object {
         fn set_y(&self, gc_context: gc_arena::MutationContext<'gc, '_>, value: f64) {
             self.0.write(gc_context).$field.set_y(value)
         }
-        fn set_matrix(&self, context: gc_arena::MutationContext<'gc, '_>, matrix: &swf::Matrix) {
+        fn set_matrix(
+            &self,
+            context: gc_arena::MutationContext<'gc, '_>,
+            matrix: &crate::matrix::Matrix,
+        ) {
             self.0.write(context).$field.set_matrix(matrix)
         }
     };
@@ -1553,6 +1639,10 @@ macro_rules! impl_display_object {
 impl<'gc> DisplayObject<'gc> {
     pub fn ptr_eq(a: DisplayObject<'gc>, b: DisplayObject<'gc>) -> bool {
         a.as_ptr() == b.as_ptr()
+    }
+
+    pub fn option_ptr_eq(a: Option<DisplayObject<'gc>>, b: Option<DisplayObject<'gc>>) -> bool {
+        a.map(|o| o.as_ptr()) == b.map(|o| o.as_ptr())
     }
 }
 
@@ -1583,9 +1673,13 @@ bitflags! {
         /// When this flag is set, changes from SWF `RemoveObject` tags are ignored.
         const INSTANTIATED_BY_TIMELINE = 1 << 5;
 
+        /// Whether this object is a "root", the top-most display object of a loaded SWF or Bitmap.
+        /// Used by `MovieClip.getBytesLoaded` in AVM1 and `DisplayObject.root` in AVM2.
+        const IS_ROOT                  = 1 << 6;
+
         /// Whether this object has `_lockroot` set to true, in which case
         /// it becomes the _root of itself and of any children
-        const LOCK_ROOT                = 1 << 6;
+        const LOCK_ROOT                = 1 << 7;
     }
 }
 

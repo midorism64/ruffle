@@ -170,6 +170,10 @@ struct MovieMetadata {
     num_frames: u16,
     #[serde(rename = "swfVersion")]
     swf_version: u8,
+    #[serde(rename = "backgroundColor")]
+    background_color: Option<String>,
+    #[serde(rename = "isActionScript3")]
+    is_action_script_3: bool,
 }
 
 /// An opaque handle to a `RuffleInstance` inside the pool.
@@ -204,10 +208,10 @@ impl Ruffle {
     /// This method should only be called once per player.
     pub fn stream_from(&mut self, movie_url: &str, parameters: &JsValue) -> Result<(), JsValue> {
         let _ = self.with_core_mut(|core| {
-            let parameters_to_load = parse_movie_parameters(&parameters);
+            let parameters_to_load = parse_movie_parameters(parameters);
 
             let ruffle = *self;
-            let on_metadata = move |swf_header: &ruffle_core::swf::Header| {
+            let on_metadata = move |swf_header: &ruffle_core::swf::HeaderExt| {
                 ruffle.on_metadata(swf_header);
             };
 
@@ -225,7 +229,7 @@ impl Ruffle {
             swf_data.copy_to(&mut data[..]);
             let mut movie = SwfMovie::from_data(&data, None, None)
                 .map_err(|e| format!("Error loading movie: {}", e))?;
-            movie.append_parameters(parse_movie_parameters(&parameters));
+            movie.append_parameters(parse_movie_parameters(parameters));
             movie
         });
 
@@ -976,16 +980,22 @@ impl Ruffle {
         });
     }
 
-    fn on_metadata(&self, swf_header: &ruffle_core::swf::Header) {
+    fn on_metadata(&self, swf_header: &ruffle_core::swf::HeaderExt) {
         let _ = self.with_instance(|instance| {
-            let width = swf_header.stage_size.x_max - swf_header.stage_size.x_min;
-            let height = swf_header.stage_size.y_max - swf_header.stage_size.y_min;
+            let width = swf_header.stage_size().x_max - swf_header.stage_size().x_min;
+            let height = swf_header.stage_size().y_max - swf_header.stage_size().y_min;
+            // Convert the background color to an HTML hex color ("#FFFFFF").
+            let background_color = swf_header
+                .background_color()
+                .map(|color| format!("#{:06X}", color.to_rgb()));
             let metadata = MovieMetadata {
                 width: width.to_pixels(),
                 height: height.to_pixels(),
-                frame_rate: swf_header.frame_rate,
-                num_frames: swf_header.num_frames,
-                swf_version: swf_header.version,
+                frame_rate: swf_header.frame_rate().to_f32(),
+                num_frames: swf_header.num_frames(),
+                swf_version: swf_header.version(),
+                background_color,
+                is_action_script_3: swf_header.is_action_script_3(),
             };
 
             if let Ok(value) = JsValue::from_serde(&metadata) {
@@ -1143,7 +1153,7 @@ fn js_to_external_value(js: &JsValue) -> ExternalValue {
         ExternalValue::List(values)
     } else if let Some(object) = js.dyn_ref::<Object>() {
         let mut values = BTreeMap::new();
-        for entry in Object::entries(&object).values() {
+        for entry in Object::entries(object).values() {
             if let Ok(entry) = entry.and_then(|v| v.dyn_into::<Array>()) {
                 if let Some(key) = entry.get(0).as_string() {
                     values.insert(key, js_to_external_value(&entry.get(1)));

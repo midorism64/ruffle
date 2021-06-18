@@ -19,6 +19,9 @@ extern crate smallvec;
 extern crate downcast_rs;
 
 #[macro_use]
+extern crate num_derive;
+
+#[macro_use]
 mod avm1;
 mod avm2;
 pub mod bitmap;
@@ -35,6 +38,7 @@ mod font;
 mod html;
 mod library;
 pub mod loader;
+pub mod matrix;
 mod player;
 mod prelude;
 pub mod shape_utils;

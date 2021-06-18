@@ -4,10 +4,26 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::globals::point::{point_to_object, value_to_point};
-use crate::avm1::property::Attribute;
+use crate::avm1::property_decl::{define_properties_on, Declaration};
 use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
+use crate::matrix::Matrix;
 use gc_arena::MutationContext;
-use swf::{Matrix, Twips};
+use swf::Twips;
+
+const PROTO_DECLS: &[Declaration] = declare_properties! {
+    "toString" => method(to_string);
+    "identity" => method(identity);
+    "clone" => method(clone);
+    "scale" => method(scale);
+    "rotate" => method(rotate);
+    "translate" => method(translate);
+    "concat" => method(concat);
+    "invert" => method(invert);
+    "createBox" => method(create_box);
+    "createGradientBox" => method(create_gradient_box);
+    "transformPoint" => method(transform_point);
+    "deltaTransformPoint" => method(delta_transform_point);
+};
 
 pub fn value_to_matrix<'gc>(
     value: Value<'gc>,
@@ -86,6 +102,49 @@ pub fn object_to_matrix<'gc>(
     Ok(Matrix { a, b, c, d, tx, ty })
 }
 
+/// Returns a `Matrix` with the properties from `object`.
+///
+/// Returns the identity matrix if any of the `a`, `b`, `c`, `d`, or `tx` properties do not exist.
+pub fn object_to_matrix_or_default<'gc>(
+    object: Object<'gc>,
+    activation: &mut Activation<'_, 'gc, '_>,
+) -> Result<Matrix, Error<'gc>> {
+    // This works with raw properties (`get_local`).
+    // TODO: This should ignore virtual properties.
+    let a = if let Some(val) = object.get_local("a", activation, object) {
+        val?.coerce_to_f64(activation)? as f32
+    } else {
+        return Ok(Default::default());
+    };
+    let b = if let Some(val) = object.get_local("b", activation, object) {
+        val?.coerce_to_f64(activation)? as f32
+    } else {
+        return Ok(Default::default());
+    };
+    let c = if let Some(val) = object.get_local("c", activation, object) {
+        val?.coerce_to_f64(activation)? as f32
+    } else {
+        return Ok(Default::default());
+    };
+    let d = if let Some(val) = object.get_local("d", activation, object) {
+        val?.coerce_to_f64(activation)? as f32
+    } else {
+        return Ok(Default::default());
+    };
+    let tx = if let Some(val) = object.get_local("tx", activation, object) {
+        Twips::from_pixels(val?.coerce_to_f64(activation)?)
+    } else {
+        return Ok(Default::default());
+    };
+    let ty = if let Some(val) = object.get_local("ty", activation, object) {
+        Twips::from_pixels(val?.coerce_to_f64(activation)?)
+    } else {
+        return Ok(Default::default());
+    };
+
+    Ok(Matrix { a, b, c, d, tx, ty })
+}
+
 pub fn matrix_to_object<'gc>(
     matrix: Matrix,
     activation: &mut Activation<'_, 'gc, '_>,
@@ -123,7 +182,7 @@ fn constructor<'gc>(
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
     if args.is_empty() {
-        apply_matrix_to_object(Matrix::identity(), this, activation)?;
+        apply_matrix_to_object(Matrix::IDENTITY, this, activation)?;
     } else {
         if let Some(a) = args.get(0) {
             this.set("a", *a, activation)?;
@@ -153,7 +212,7 @@ fn identity<'gc>(
     this: Object<'gc>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    apply_matrix_to_object(Matrix::identity(), this, activation)?;
+    apply_matrix_to_object(Matrix::IDENTITY, this, activation)?;
     Ok(Value::Undefined)
 }
 
@@ -421,103 +480,7 @@ pub fn create_proto<'gc>(
     proto: Object<'gc>,
     fn_proto: Object<'gc>,
 ) -> Object<'gc> {
-    let mut object = ScriptObject::object(gc_context, Some(proto));
-
-    object.force_set_function(
-        "toString",
-        to_string,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "identity",
-        identity,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "clone",
-        clone,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "scale",
-        scale,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "rotate",
-        rotate,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "translate",
-        translate,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "concat",
-        concat,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "invert",
-        invert,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "createBox",
-        create_box,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "createGradientBox",
-        create_gradient_box,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "transformPoint",
-        transform_point,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "deltaTransformPoint",
-        delta_transform_point,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-
+    let object = ScriptObject::object(gc_context, Some(proto));
+    define_properties_on(PROTO_DECLS, gc_context, object, fn_proto);
     object.into()
 }

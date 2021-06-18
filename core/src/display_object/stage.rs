@@ -55,6 +55,9 @@ pub struct StageData<'gc> {
     #[collect(require_static)]
     movie_size: (u32, u32),
 
+    /// The quality settings of the stage.
+    quality: StageQuality,
+
     /// The dimensions of the stage, as reported to ActionScript.
     #[collect(require_static)]
     stage_size: (u32, u32),
@@ -64,6 +67,13 @@ pub struct StageData<'gc> {
 
     /// The alignment of the stage.
     align: StageAlign,
+
+    /// Whether to use high quality downsampling for bitmaps.
+    ///
+    /// This is usally implied by `quality` being `Best` or higher, but the AVM1
+    /// `ToggleHighQuality` op can adjust stage quality independently of this flag.
+    /// This setting is currently ignored in Ruffle.
+    use_bitmap_downsampling: bool,
 
     /// The dimensions of the stage's containing viewport.
     #[collect(require_static)]
@@ -85,7 +95,7 @@ pub struct StageData<'gc> {
 
 impl<'gc> Stage<'gc> {
     pub fn empty(gc_context: MutationContext<'gc, '_>, width: u32, height: u32) -> Stage<'gc> {
-        Self(GcCell::allocate(
+        let stage = Self(GcCell::allocate(
             gc_context,
             StageData {
                 base: Default::default(),
@@ -93,16 +103,20 @@ impl<'gc> Stage<'gc> {
                 background_color: None,
                 letterbox: Letterbox::Fullscreen,
                 movie_size: (width, height),
+                quality: Default::default(),
                 stage_size: (width, height),
                 scale_mode: Default::default(),
                 align: Default::default(),
+                use_bitmap_downsampling: false,
                 viewport_size: (width, height),
                 viewport_scale_factor: 1.0,
                 view_bounds: Default::default(),
                 show_menu: true,
                 avm2_object: Avm2ScriptObject::bare_object(gc_context),
             },
-        ))
+        ));
+        stage.set_is_root(gc_context, true);
+        stage
     }
 
     pub fn background_color(self) -> Option<Color> {
@@ -136,6 +150,33 @@ impl<'gc> Stage<'gc> {
     /// Set the size of the SWF file.
     pub fn set_movie_size(self, gc_context: MutationContext<'gc, '_>, width: u32, height: u32) {
         self.0.write(gc_context).movie_size = (width, height);
+    }
+
+    /// Returns the quality setting of the stage.
+    ///
+    /// In the Flash Player, the quality setting affects anti-aliasing and smoothing of bitmaps.
+    /// This setting is currently ignored in Ruffle.
+    /// Used by AVM1 `stage.quality` and AVM2 `Stage.quality` properties.
+    pub fn quality(self) -> StageQuality {
+        self.0.read().quality
+    }
+
+    /// Sets the quality setting of the stage.
+    ///
+    /// In the Flash Player, the quality setting affects anti-aliasing and smoothing of bitmaps.
+    /// This setting is currently ignored in Ruffle.
+    /// Used by AVM1 `stage.quality` and AVM2 `Stage.quality` properties.
+    pub fn set_quality(self, gc_context: MutationContext<'gc, '_>, quality: StageQuality) {
+        let mut this = self.0.write(gc_context);
+        this.quality = quality;
+        this.use_bitmap_downsampling = matches!(
+            quality,
+            StageQuality::Best
+                | StageQuality::High8x8
+                | StageQuality::High8x8Linear
+                | StageQuality::High16x16
+                | StageQuality::High16x16Linear
+        );
     }
 
     /// Get the size of the stage.
@@ -172,6 +213,18 @@ impl<'gc> Stage<'gc> {
     pub fn set_align(self, context: &mut UpdateContext<'_, 'gc, '_>, align: StageAlign) {
         self.0.write(context.gc_context).align = align;
         self.build_matrices(context);
+    }
+
+    /// Returns whether bitmaps will use high quality downsampling when scaled down.
+    /// This setting is currently ignored in Ruffle.
+    pub fn use_bitmap_downsampling(self) -> bool {
+        self.0.read().use_bitmap_downsampling
+    }
+
+    /// Sets whether bitmaps will use high quality downsampling when scaled down.
+    /// This setting is currently ignored in Ruffle.
+    pub fn set_use_bitmap_downsampling(self, gc_context: MutationContext<'gc, '_>, value: bool) {
+        self.0.write(gc_context).use_bitmap_downsampling = value;
     }
 
     /// Get the current viewport size, in device pixels.
@@ -320,8 +373,8 @@ impl<'gc> Stage<'gc> {
         self.0.write(context.gc_context).view_bounds = if self.should_letterbox(context.ui) {
             // Letterbox: movie area
             BoundingBox {
-                x_min: Twips::zero(),
-                y_min: Twips::zero(),
+                x_min: Twips::ZERO,
+                y_min: Twips::ZERO,
                 x_max: Twips::from_pixels(movie_width),
                 y_max: Twips::from_pixels(movie_height),
                 valid: true,
@@ -530,14 +583,8 @@ impl<'gc> TDisplayObject<'gc> for Stage<'gc> {
     }
 
     fn construct_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
-        for child in self.iter_execution_list() {
+        for child in self.iter_render_list() {
             child.construct_frame(context);
-        }
-    }
-
-    fn run_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
-        for child in self.iter_execution_list() {
-            child.run_frame(context);
         }
     }
 
@@ -648,5 +695,105 @@ impl FromStr for StageAlign {
             }
         }
         Ok(align)
+    }
+}
+
+/// The quality setting of the `Stage`.
+///
+/// In the Flash Player, this settings affects anti-aliasing and bitmap smoothing.
+/// These settings currently have no effect in Ruffle, but the active setting is still stored.
+/// [StageQuality in the AS3 Reference](https://help.adobe.com/en_US/FlashPlatform/reference/actionscript/3/flash/display/StageQuality.html)
+#[derive(Clone, Collect, Copy, Debug, Eq, PartialEq)]
+#[collect(require_static)]
+pub enum StageQuality {
+    /// No anti-aliasing, and bitmaps are never smoothed.
+    Low,
+
+    /// 2x anti-aliasing.
+    Medium,
+
+    /// 4x anti-aliasing.
+    High,
+
+    /// 4x anti-aliasing with high quality downsampling.
+    /// Bitmaps will use high quality downsampling when scaled down.
+    /// Despite the name, this is not the best quality setting as 8x8 and 16x16 modes were added to
+    /// Flash Player 11.3.
+    Best,
+
+    /// 8x anti-aliasing.
+    /// Bitmaps will use high quality downsampling when scaled down.
+    High8x8,
+
+    /// 8x anti-aliasing done in linear sRGB space.
+    /// Bitmaps will use high quality downsampling when scaled down.
+    High8x8Linear,
+
+    /// 16x anti-aliasing.
+    /// Bitmaps will use high quality downsampling when scaled down.
+    High16x16,
+
+    /// 16x anti-aliasing done in linear sRGB space.
+    /// Bitmaps will use high quality downsampling when scaled down.
+    High16x16Linear,
+}
+
+impl StageQuality {
+    /// Returns the string representing the quality setting as returned by AVM1 `_quality` and
+    /// AVM2 `Stage.quality`.
+    pub fn into_avm_str(self) -> &'static str {
+        // Flash Player always returns quality in uppercase, despite the AVM2 `StageQuality` being
+        // lowercase.
+        match self {
+            StageQuality::Low => "LOW",
+            StageQuality::Medium => "MEDIUM",
+            StageQuality::High => "HIGH",
+            StageQuality::Best => "BEST",
+            // The linear sRGB quality settings are not returned even if they are active.
+            StageQuality::High8x8 | StageQuality::High8x8Linear => "8X8",
+            StageQuality::High16x16 | StageQuality::High16x16Linear => "16X16",
+        }
+    }
+}
+
+impl Default for StageQuality {
+    fn default() -> StageQuality {
+        StageQuality::High
+    }
+}
+
+impl Display for StageQuality {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // Match string values returned by AS.
+        let s = match *self {
+            StageQuality::Low => "low",
+            StageQuality::Medium => "medium",
+            StageQuality::High => "high",
+            StageQuality::Best => "best",
+            StageQuality::High8x8 => "8x8",
+            StageQuality::High8x8Linear => "8x8linear",
+            StageQuality::High16x16 => "16x16",
+            StageQuality::High16x16Linear => "16x16linear",
+        };
+        f.write_str(s)
+    }
+}
+
+impl FromStr for StageQuality {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let quality = match s.to_ascii_lowercase().as_str() {
+            "low" => StageQuality::Low,
+            "medium" => StageQuality::Medium,
+            "high" => StageQuality::High,
+            "best" => StageQuality::Best,
+            "8x8" => StageQuality::High8x8,
+            "8x8linear" => StageQuality::High8x8Linear,
+            "16x16" => StageQuality::High16x16,
+            "16x16linear" => StageQuality::High16x16Linear,
+            _ => return Err(ParseEnumError),
+        };
+        Ok(quality)
     }
 }

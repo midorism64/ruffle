@@ -2,11 +2,22 @@
 
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
-use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::object::convolution_filter::ConvolutionFilterObject;
-use crate::avm1::property::Attribute;
+use crate::avm1::property_decl::{define_properties_on, Declaration};
 use crate::avm1::{Object, ScriptObject, TObject, Value};
 use gc_arena::MutationContext;
+
+const PROTO_DECLS: &[Declaration] = declare_properties! {
+    "alpha" => property(alpha, set_alpha);
+    "bias" => property(bias, set_bias);
+    "clamp" => property(clamp, set_clamp);
+    "color" => property(color, set_color);
+    "divisor" => property(divisor, set_divisor);
+    "matrix" => property(matrix, set_matrix);
+    "matrixX" => property(matrix_x, set_matrix_x);
+    "matrixY" => property(matrix_y, set_matrix_y);
+    "preserveAlpha" => property(preserve_alpha, set_preserve_alpha);
+};
 
 pub fn constructor<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
@@ -182,13 +193,11 @@ pub fn matrix<'gc>(
             activation.context.gc_context,
             Some(activation.context.avm1.prototypes.array),
         );
-
-        let arr = filter.matrix();
-
-        for (index, item) in arr.iter().copied().enumerate() {
-            array.set_array_element(index, item.into(), activation.context.gc_context);
+        for (i, item) in filter.matrix().iter().copied().enumerate() {
+            array
+                .set_element(activation, i as i32, item.into())
+                .unwrap();
         }
-
         return Ok(array.into());
     }
 
@@ -204,14 +213,15 @@ pub fn set_matrix<'gc>(
 
     if let Some(filter) = this.as_convolution_filter_object() {
         if let Value::Object(obj) = matrix {
-            let arr_len = obj
-                .length()
-                .max((filter.matrix_x() * filter.matrix_y()) as usize);
+            let length = obj.length(activation)? as usize;
 
-            let mut new_matrix = (0..arr_len).map(|_| 0.0).collect::<Vec<_>>();
+            let arr_len = length.max(filter.matrix_x() as usize * filter.matrix_y() as usize);
+            let mut new_matrix = vec![0.0; arr_len];
 
-            for (index, item) in new_matrix.iter_mut().enumerate().take(obj.length()) {
-                *item = obj.array_element(index).coerce_to_f64(activation)?;
+            for (i, item) in new_matrix.iter_mut().enumerate().take(length) {
+                *item = obj
+                    .get_element(activation, i as i32)
+                    .coerce_to_f64(activation)?;
             }
 
             filter.set_matrix(activation.context.gc_context, new_matrix);
@@ -321,168 +331,6 @@ pub fn create_proto<'gc>(
 ) -> Object<'gc> {
     let filter = ConvolutionFilterObject::empty_object(gc_context, Some(proto));
     let object = filter.as_script_object().unwrap();
-
-    object.add_property(
-        gc_context,
-        "alpha",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(alpha),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_alpha),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "bias",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(bias),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_bias),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "clamp",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(clamp),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_clamp),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "color",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(color),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_color),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "divisor",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(divisor),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_divisor),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "matrix",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(matrix),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_matrix),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "matrixX",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(matrix_x),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_matrix_x),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "matrixY",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(matrix_y),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_matrix_y),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
-    object.add_property(
-        gc_context,
-        "preserveAlpha",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(preserve_alpha),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_preserve_alpha),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
+    define_properties_on(PROTO_DECLS, gc_context, object, fn_proto);
     filter.into()
 }

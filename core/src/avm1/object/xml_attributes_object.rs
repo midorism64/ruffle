@@ -61,26 +61,26 @@ impl<'gc> TObject<'gc> for XmlAttributesObject<'gc> {
         name: &str,
         activation: &mut Activation<'_, 'gc, '_>,
         _this: Object<'gc>,
-    ) -> Result<Value<'gc>, Error<'gc>> {
-        Ok(self
-            .node()
+    ) -> Option<Result<Value<'gc>, Error<'gc>>> {
+        self.node()
             .attribute_value(&XmlName::from_str(name))
-            .map(|s| AvmString::new(activation.context.gc_context, s).into())
-            .unwrap_or_else(|| Value::Undefined))
+            .map(|s| Ok(AvmString::new(activation.context.gc_context, s).into()))
     }
 
-    fn set(
+    fn set_local(
         &self,
         name: &str,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
+        _this: Object<'gc>,
+        _base_proto: Option<Object<'gc>>,
     ) -> Result<(), Error<'gc>> {
         self.node().set_attribute_value(
             activation.context.gc_context,
             &XmlName::from_str(name),
             &value.coerce_to_string(activation)?,
         );
-        self.base().set(name, value, activation)
+        Ok(())
     }
     fn call(
         &self,
@@ -133,35 +133,28 @@ impl<'gc> TObject<'gc> for XmlAttributesObject<'gc> {
     fn add_property_with_case(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
         name: &str,
         get: Object<'gc>,
         set: Option<Object<'gc>>,
         attributes: Attribute,
     ) {
         self.base()
-            .add_property_with_case(activation, gc_context, name, get, set, attributes)
+            .add_property_with_case(activation, name, get, set, attributes)
     }
 
     fn set_watcher(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
         name: Cow<str>,
         callback: Object<'gc>,
         user_data: Value<'gc>,
     ) {
         self.base()
-            .set_watcher(activation, gc_context, name, callback, user_data);
+            .set_watcher(activation, name, callback, user_data);
     }
 
-    fn remove_watcher(
-        &self,
-        activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
-        name: Cow<str>,
-    ) -> bool {
-        self.base().remove_watcher(activation, gc_context, name)
+    fn remove_watcher(&self, activation: &mut Activation<'_, 'gc, '_>, name: Cow<str>) -> bool {
+        self.base().remove_watcher(activation, name)
     }
 
     fn define_value(
@@ -218,10 +211,6 @@ impl<'gc> TObject<'gc> for XmlAttributesObject<'gc> {
         base
     }
 
-    fn as_string(&self) -> Cow<str> {
-        Cow::Owned(self.base().as_string().into_owned())
-    }
-
     fn type_of(&self) -> &'static str {
         self.base().type_of()
     }
@@ -246,32 +235,36 @@ impl<'gc> TObject<'gc> for XmlAttributesObject<'gc> {
         self.base().as_ptr() as *const ObjectPtr
     }
 
-    fn length(&self) -> usize {
-        self.base().length()
+    fn length(&self, activation: &mut Activation<'_, 'gc, '_>) -> Result<i32, Error<'gc>> {
+        self.base().length(activation)
     }
 
-    fn array(&self) -> Vec<Value<'gc>> {
-        self.base().array()
-    }
-
-    fn set_length(&self, gc_context: MutationContext<'gc, '_>, length: usize) {
-        self.base().set_length(gc_context, length)
-    }
-
-    fn array_element(&self, index: usize) -> Value<'gc> {
-        self.base().array_element(index)
-    }
-
-    fn set_array_element(
+    fn set_length(
         &self,
-        index: usize,
-        value: Value<'gc>,
-        gc_context: MutationContext<'gc, '_>,
-    ) -> usize {
-        self.base().set_array_element(index, value, gc_context)
+        activation: &mut Activation<'_, 'gc, '_>,
+        length: i32,
+    ) -> Result<(), Error<'gc>> {
+        self.base().set_length(activation, length)
     }
 
-    fn delete_array_element(&self, index: usize, gc_context: MutationContext<'gc, '_>) {
-        self.base().delete_array_element(index, gc_context)
+    fn has_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool {
+        self.base().has_element(activation, index)
+    }
+
+    fn get_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> Value<'gc> {
+        self.base().get_element(activation, index)
+    }
+
+    fn set_element(
+        &self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        index: i32,
+        value: Value<'gc>,
+    ) -> Result<(), Error<'gc>> {
+        self.base().set_element(activation, index, value)
+    }
+
+    fn delete_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool {
+        self.base().delete_element(activation, index)
     }
 }

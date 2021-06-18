@@ -14,9 +14,9 @@ pub use matrix::Matrix;
 
 /// A complete header and tags in the SWF file.
 /// This is returned by the `swf::read_swf` convenience method.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Swf<'a> {
-    pub header: Header,
+    pub header: HeaderExt,
     pub tags: Vec<Tag<'a>>,
 }
 
@@ -24,7 +24,7 @@ pub struct Swf<'a> {
 /// Owns the decompressed SWF data, which will be referenced when parsed by `parse_swf`.
 pub struct SwfBuf {
     /// The parsed SWF header.
-    pub header: Header,
+    pub header: HeaderExt,
 
     /// The decompressed SWF tag stream.
     pub data: Vec<u8>,
@@ -39,17 +39,143 @@ pub struct SwfBuf {
 pub struct Header {
     pub compression: Compression,
     pub version: u8,
-    pub uncompressed_length: u32,
     pub stage_size: Rectangle,
-    pub frame_rate: f32,
+    pub frame_rate: Fixed8,
     pub num_frames: u16,
+}
+
+impl Header {
+    pub fn default_with_swf_version(version: u8) -> Self {
+        Self {
+            compression: Compression::None,
+            version,
+            stage_size: Default::default(),
+            frame_rate: Fixed8::ONE,
+            num_frames: 0,
+        }
+    }
+}
+
+/// The extended metadata of an SWF file.
+///
+/// This includes the SWF header data as well as metdata from the FileAttributes and
+/// SetBackgroundColor tags.
+///
+/// This metadata may not reflect the actual data inside a malformed SWF; for example,
+/// the root timeline my actually contain fewer frames than `HeaderExt::num_frames` if it is
+/// corrupted.
+#[derive(Clone, Debug)]
+pub struct HeaderExt {
+    pub(crate) header: Header,
+    pub(crate) file_attributes: FileAttributes,
+    pub(crate) background_color: Option<SetBackgroundColor>,
+    pub(crate) uncompressed_len: u32,
+}
+
+impl HeaderExt {
+    #[inline]
+    /// Returns the header for a dummy SWF file with the given SWF version.
+    pub fn default_with_swf_version(version: u8) -> Self {
+        Self {
+            header: Header::default_with_swf_version(version),
+            file_attributes: Default::default(),
+            background_color: None,
+            uncompressed_len: 0,
+        }
+    }
+
+    /// The background color of the SWF from the SetBackgroundColor tag.
+    ///
+    /// `None` will be returned if the SetBackgroundColor tag was not found.
+    #[inline]
+    pub fn background_color(&self) -> Option<Color> {
+        self.background_color.clone()
+    }
+
+    /// The compression format used by the SWF.
+    #[inline]
+    pub fn compression(&self) -> Compression {
+        self.header.compression
+    }
+
+    /// The frame rate of the SWF, in frames per second.
+    #[inline]
+    pub fn frame_rate(&self) -> Fixed8 {
+        self.header.frame_rate
+    }
+
+    /// Whether this SWF contains XMP metadata in a Metadata tag.
+    #[inline]
+    pub fn has_metdata(&self) -> bool {
+        self.file_attributes.contains(FileAttributes::HAS_METADATA)
+    }
+
+    /// Returns the basic SWF header.
+    #[inline]
+    pub fn swf_header(&self) -> &Header {
+        &self.header
+    }
+
+    /// Whether this SWF uses ActionScript 3.0 (AVM2).
+    #[inline]
+    pub fn is_action_script_3(&self) -> bool {
+        self.file_attributes
+            .contains(FileAttributes::IS_ACTION_SCRIPT_3)
+    }
+
+    /// The number of frames on the root timeline.
+    #[inline]
+    pub fn num_frames(&self) -> u16 {
+        self.header.num_frames
+    }
+
+    /// The stage dimensions of this SWF.
+    #[inline]
+    pub fn stage_size(&self) -> &Rectangle {
+        &self.header.stage_size
+    }
+
+    /// The SWF version.
+    #[inline]
+    pub fn version(&self) -> u8 {
+        self.header.version
+    }
+
+    /// The length of the SWF after decompression.
+    #[inline]
+    pub fn uncompressed_len(&self) -> u32 {
+        self.uncompressed_len
+    }
+
+    /// Whether this SWF requests hardware acceleration to blit to the screen.
+    #[inline]
+    pub fn use_direct_blit(&self) -> bool {
+        self.file_attributes
+            .contains(FileAttributes::USE_DIRECT_BLIT)
+    }
+
+    /// Whether this SWF requests hardware acceleration for compositing.
+    #[inline]
+    pub fn use_gpu(&self) -> bool {
+        self.file_attributes.contains(FileAttributes::USE_GPU)
+    }
+
+    /// Whether this SWF should be placed in the network sandbox when run locally.
+    ///
+    /// SWFs in the network sandbox can only access network resources,  not local resources.
+    /// SWFs in the local sandbox can only access local resources, not network resources.
+    #[inline]
+    pub fn use_network_sandbox(&self) -> bool {
+        self.file_attributes
+            .contains(FileAttributes::USE_NETWORK_SANDBOX)
+    }
 }
 
 /// The compression format used internally by the SWF file.
 ///
 /// The vast majority of SWFs will use zlib compression.
 /// [SWF19 p.27](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=27)
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Compression {
     None,
     Zlib,
@@ -74,6 +200,24 @@ impl Twips {
     /// There are 20 twips in a pixel.
     pub const TWIPS_PER_PIXEL: f64 = 20.0;
 
+    /// The `Twips` object with a value of `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// assert_eq!(swf::Twips::ZERO.to_pixels(), 0.0);
+    /// ```
+    pub const ZERO: Self = Self(0);
+
+    /// The `Twips` object with a value of `1` pixel.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// assert_eq!(swf::Twips::ONE.to_pixels(), 1.0);
+    /// ```
+    pub const ONE: Self = Self(Self::TWIPS_PER_PIXEL as i32);
+
     /// Creates a new `Twips` object. Note that the `twips` value is in twips,
     /// not pixels. Use the [`from_pixels`] method to convert from pixel units.
     ///
@@ -88,20 +232,6 @@ impl Twips {
     /// ```
     pub fn new<T: Into<i32>>(twips: T) -> Self {
         Self(twips.into())
-    }
-
-    /// Creates a new `Twips` object with a value of `0`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use swf::Twips;
-    ///
-    /// let twips = Twips::zero();
-    /// assert_eq!(twips.get(), 0);
-    /// ```
-    pub const fn zero() -> Self {
-        Self(0)
     }
 
     /// Returns the number of twips.
@@ -358,23 +488,52 @@ impl Default for ColorTransform {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, FromPrimitive)]
 pub enum Language {
-    Unknown,
-    Latin,
-    Japanese,
-    Korean,
-    SimplifiedChinese,
-    TraditionalChinese,
+    Unknown = 0,
+    Latin = 1,
+    Japanese = 2,
+    Korean = 3,
+    SimplifiedChinese = 4,
+    TraditionalChinese = 5,
 }
 
-#[derive(Debug, PartialEq)]
-pub struct FileAttributes {
-    pub use_direct_blit: bool,
-    pub use_gpu: bool,
-    pub has_metadata: bool,
-    pub is_action_script_3: bool,
-    pub use_network_sandbox: bool,
+impl Language {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
+}
+
+bitflags! {
+    /// Flags that define various characteristic of an SWF file.
+    ///
+    /// [SWF19 pp.57-58 ClipEvent](https://www.adobe.com/content/dam/acom/en/devnet/pdf/swf-file-format-spec.pdf#page=47)
+    pub struct FileAttributes: u8 {
+        /// Whether this SWF requests hardware acceleration to blit to the screen.
+        const USE_DIRECT_BLIT = 1 << 6;
+
+        /// Whether this SWF requests hardware acceleration for compositing.
+        const USE_GPU = 1 << 5;
+
+        /// Whether this SWF contains XMP metadata in a Metadata tag.
+        const HAS_METADATA = 1 << 4;
+
+        /// Whether this SWF uses ActionScript 3 (AVM2).
+        const IS_ACTION_SCRIPT_3 = 1 << 3;
+
+        /// Whether this SWF should be placed in the network sandbox when run locally.
+        ///
+        /// SWFs in the network sandbox can only access network resources,  not local resources.
+        /// SWFs in the local sandbox can only access local resources, not network resources.
+        const USE_NETWORK_SANDBOX = 1 << 0;
+    }
+}
+
+impl Default for FileAttributes {
+    fn default() -> Self {
+        // The settings for SWF7 and earlier, which contain no FileAttributes tag.
+        Self::empty()
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -441,11 +600,11 @@ pub enum Filter {
 #[derive(Debug, PartialEq, Clone)]
 pub struct DropShadowFilter {
     pub color: Color,
-    pub blur_x: f64,
-    pub blur_y: f64,
-    pub angle: f64,
-    pub distance: f64,
-    pub strength: f32,
+    pub blur_x: Fixed16,
+    pub blur_y: Fixed16,
+    pub angle: Fixed16,
+    pub distance: Fixed16,
+    pub strength: Fixed8,
     pub is_inner: bool,
     pub is_knockout: bool,
     pub num_passes: u8,
@@ -453,17 +612,17 @@ pub struct DropShadowFilter {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct BlurFilter {
-    pub blur_x: f64,
-    pub blur_y: f64,
+    pub blur_x: Fixed16,
+    pub blur_y: Fixed16,
     pub num_passes: u8,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct GlowFilter {
     pub color: Color,
-    pub blur_x: f64,
-    pub blur_y: f64,
-    pub strength: f32,
+    pub blur_x: Fixed16,
+    pub blur_y: Fixed16,
+    pub strength: Fixed8,
     pub is_inner: bool,
     pub is_knockout: bool,
     pub num_passes: u8,
@@ -473,11 +632,11 @@ pub struct GlowFilter {
 pub struct BevelFilter {
     pub shadow_color: Color,
     pub highlight_color: Color,
-    pub blur_x: f64,
-    pub blur_y: f64,
-    pub angle: f64,
-    pub distance: f64,
-    pub strength: f32,
+    pub blur_x: Fixed16,
+    pub blur_y: Fixed16,
+    pub angle: Fixed16,
+    pub distance: Fixed16,
+    pub strength: Fixed8,
     pub is_inner: bool,
     pub is_knockout: bool,
     pub is_on_top: bool,
@@ -487,11 +646,11 @@ pub struct BevelFilter {
 #[derive(Debug, PartialEq, Clone)]
 pub struct GradientGlowFilter {
     pub colors: Vec<GradientRecord>,
-    pub blur_x: f64,
-    pub blur_y: f64,
-    pub angle: f64,
-    pub distance: f64,
-    pub strength: f32,
+    pub blur_x: Fixed16,
+    pub blur_y: Fixed16,
+    pub angle: Fixed16,
+    pub distance: Fixed16,
+    pub strength: Fixed8,
     pub is_inner: bool,
     pub is_knockout: bool,
     pub is_on_top: bool,
@@ -502,9 +661,9 @@ pub struct GradientGlowFilter {
 pub struct ConvolutionFilter {
     pub num_matrix_rows: u8,
     pub num_matrix_cols: u8,
-    pub matrix: Vec<f64>,
-    pub divisor: f64,
-    pub bias: f64,
+    pub matrix: Vec<Fixed16>,
+    pub divisor: Fixed16,
+    pub bias: Fixed16,
     pub default_color: Color,
     pub is_clamped: bool,
     pub is_preserve_alpha: bool,
@@ -512,39 +671,48 @@ pub struct ConvolutionFilter {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ColorMatrixFilter {
-    pub matrix: [f64; 20],
+    pub matrix: [Fixed16; 20],
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct GradientBevelFilter {
     pub colors: Vec<GradientRecord>,
-    pub blur_x: f64,
-    pub blur_y: f64,
-    pub angle: f64,
-    pub distance: f64,
-    pub strength: f32,
+    pub blur_x: Fixed16,
+    pub blur_y: Fixed16,
+    pub angle: Fixed16,
+    pub distance: Fixed16,
+    pub strength: Fixed8,
     pub is_inner: bool,
     pub is_knockout: bool,
     pub is_on_top: bool,
     pub num_passes: u8,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive)]
 pub enum BlendMode {
-    Normal,
-    Layer,
-    Multiply,
-    Screen,
-    Lighten,
-    Darken,
-    Difference,
-    Add,
-    Subtract,
-    Invert,
-    Alpha,
-    Erase,
-    Overlay,
-    HardLight,
+    Normal = 0,
+    Layer = 2,
+    Multiply = 3,
+    Screen = 4,
+    Lighten = 5,
+    Darken = 6,
+    Difference = 7,
+    Add = 8,
+    Subtract = 9,
+    Invert = 10,
+    Alpha = 11,
+    Erase = 12,
+    Overlay = 13,
+    HardLight = 14,
+}
+
+impl BlendMode {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(match n {
+            1 => 0,
+            n => n,
+        })
+    }
 }
 
 /// An clip action (a.k.a. clip event) placed on a movieclip instance.
@@ -758,11 +926,20 @@ pub struct SoundInfo {
     pub envelope: Option<SoundEnvelope>,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, FromPrimitive)]
 pub enum SoundEvent {
-    Event,
-    Start,
-    Stop,
+    Event = 0,
+    Start = 1,
+    Stop = 2,
+}
+
+impl SoundEvent {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(match n {
+            3 => 2,
+            n => n,
+        })
+    }
 }
 
 pub type SoundEnvelope = Vec<SoundEnvelopePoint>;
@@ -824,7 +1001,7 @@ pub enum FillStyle {
     RadialGradient(Gradient),
     FocalGradient {
         gradient: Gradient,
-        focal_point: f32,
+        focal_point: Fixed8,
     },
     Bitmap {
         id: CharacterId,
@@ -842,17 +1019,29 @@ pub struct Gradient {
     pub records: Vec<GradientRecord>,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, FromPrimitive)]
 pub enum GradientSpread {
-    Pad,
-    Reflect,
-    Repeat,
+    Pad = 0,
+    Reflect = 1,
+    Repeat = 2,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+impl GradientSpread {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy, FromPrimitive)]
 pub enum GradientInterpolation {
-    Rgb,
-    LinearRgb,
+    Rgb = 0,
+    LinearRgb = 1,
+}
+
+impl GradientInterpolation {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -892,30 +1081,42 @@ impl LineStyle {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, FromPrimitive)]
 pub enum LineCapStyle {
-    Round,
-    None,
-    Square,
+    Round = 0,
+    None = 1,
+    Square = 2,
+}
+
+impl LineCapStyle {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum LineJoinStyle {
     Round,
     Bevel,
-    Miter(f32),
+    Miter(Fixed8),
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, FromPrimitive)]
 pub enum AudioCompression {
-    UncompressedUnknownEndian,
-    Adpcm,
-    Mp3,
-    Uncompressed,
-    Nellymoser16Khz,
-    Nellymoser8Khz,
-    Nellymoser,
-    Speex,
+    UncompressedUnknownEndian = 0,
+    Adpcm = 1,
+    Mp3 = 2,
+    Uncompressed = 3,
+    Nellymoser16Khz = 4,
+    Nellymoser8Khz = 5,
+    Nellymoser = 6,
+    Speex = 11,
+}
+
+impl AudioCompression {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1146,12 +1347,18 @@ pub struct TextLayout {
     pub leading: Twips,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TextAlign {
-    Left,
-    Center,
-    Right,
-    Justify,
+    Left = 0,
+    Right = 1,
+    Center = 2,
+    Justify = 3,
+}
+
+impl TextAlign {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1163,11 +1370,17 @@ pub struct FontAlignZone {
     pub height: i16,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum FontThickness {
-    Thin,
-    Medium,
-    Thick,
+    Thin = 0,
+    Medium = 1,
+    Thick = 2,
+}
+
+impl FontThickness {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1179,11 +1392,17 @@ pub struct CsmTextSettings {
     pub sharpness: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TextGridFit {
-    None,
-    Pixel,
-    SubPixel,
+    None = 0,
+    Pixel = 1,
+    SubPixel = 2,
+}
+
+impl TextGridFit {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1193,13 +1412,12 @@ pub struct DefineBitsLossless<'a> {
     pub format: BitmapFormat,
     pub width: u16,
     pub height: u16,
-    pub num_colors: u8,
     pub data: &'a [u8],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BitmapFormat {
-    ColorMap8,
+    ColorMap8 { num_colors: u8 },
     Rgb15,
     Rgb32,
 }
@@ -1215,23 +1433,35 @@ pub struct DefineVideoStream {
     pub codec: VideoCodec,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum VideoDeblocking {
-    UseVideoPacketValue,
-    None,
-    Level1,
-    Level2,
-    Level3,
-    Level4,
+    UseVideoPacketValue = 0,
+    None = 1,
+    Level1 = 2,
+    Level2 = 3,
+    Level3 = 4,
+    Level4 = 5,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl VideoDeblocking {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum VideoCodec {
-    H263,
-    ScreenVideo,
-    Vp6,
-    Vp6WithAlpha,
-    ScreenVideoV2,
+    H263 = 2,
+    ScreenVideo = 3,
+    Vp6 = 4,
+    Vp6WithAlpha = 5,
+    ScreenVideoV2 = 6,
+}
+
+impl VideoCodec {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1245,7 +1475,7 @@ pub struct VideoFrame<'a> {
 pub struct DefineBitsJpeg3<'a> {
     pub id: CharacterId,
     pub version: u8,
-    pub deblocking: f32,
+    pub deblocking: Fixed8,
     pub data: &'a [u8],
     pub alpha_data: &'a [u8],
 }

@@ -2,11 +2,43 @@
 
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
-use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::object::TObject;
 use crate::avm1::property::Attribute;
+use crate::avm1::property_decl::Declaration;
 use crate::avm1::{Object, ScriptObject, Value};
 use gc_arena::{Collect, MutationContext};
+
+const OBJECT_DECLS: &[Declaration] = declare_properties! {
+    "initialize" => method(initialize; DONT_ENUM | DONT_DELETE);
+    "addListener" => function(add_listener; DONT_ENUM | DONT_DELETE);
+    "removeListener" => function(remove_listener; DONT_ENUM | DONT_DELETE);
+    "broadcastMessage" => function(broadcast_message; DONT_ENUM | DONT_DELETE);
+};
+
+pub fn create<'gc>(
+    gc_context: MutationContext<'gc, '_>,
+    proto: Option<Object<'gc>>,
+    fn_proto: Object<'gc>,
+) -> (BroadcasterFunctions<'gc>, Object<'gc>) {
+    let object = ScriptObject::object(gc_context, proto);
+
+    let define_as_object = |index: usize| -> Object<'gc> {
+        match OBJECT_DECLS[index].define_on(gc_context, object, fn_proto) {
+            Value::Object(o) => o,
+            _ => panic!("expected object for broadcaster function"),
+        }
+    };
+
+    define_as_object(0);
+    (
+        BroadcasterFunctions {
+            add_listener: define_as_object(1),
+            remove_listener: define_as_object(2),
+            broadcast_message: define_as_object(3),
+        },
+        object.into(),
+    )
+}
 
 #[derive(Clone, Collect, Debug, Copy)]
 #[collect(no_drop)]
@@ -36,20 +68,20 @@ pub fn add_listener<'gc>(
     let listeners = this.get("_listeners", activation)?;
 
     if let Value::Object(listeners) = listeners {
-        let length = listeners.length();
-        let mut position = None;
+        let length = listeners.length(activation)?;
 
+        let mut position = None;
         for i in 0..length {
-            let other_listener = listeners.array_element(i);
+            let other_listener = listeners.get_element(activation, i);
             if new_listener == other_listener {
                 position = Some(i);
                 break;
             }
         }
 
-        if position == None {
-            listeners.set_length(activation.context.gc_context, length + 1);
-            listeners.set_array_element(length, new_listener, activation.context.gc_context);
+        if position.is_none() {
+            listeners.set_element(activation, length, new_listener)?;
+            listeners.set_length(activation, length + 1)?;
         }
     }
 
@@ -64,13 +96,12 @@ pub fn remove_listener<'gc>(
     let old_listener = args.get(0).cloned().unwrap_or(Value::Undefined);
     let listeners = this.get("_listeners", activation)?;
 
-    let mut removed = false;
     if let Value::Object(listeners) = listeners {
-        let length = listeners.length();
-        let mut position = None;
+        let length = listeners.length(activation)?;
 
+        let mut position = None;
         for i in 0..length {
-            let other_listener = listeners.array_element(i);
+            let other_listener = listeners.get_element(activation, i);
             if old_listener == other_listener {
                 position = Some(i);
                 break;
@@ -81,24 +112,19 @@ pub fn remove_listener<'gc>(
             if length > 0 {
                 let new_length = length - 1;
                 for i in position..new_length {
-                    listeners.set_array_element(
-                        i,
-                        listeners.array_element(i + 1),
-                        activation.context.gc_context,
-                    );
+                    let element = listeners.get_element(activation, i + 1);
+                    listeners.set_element(activation, i, element)?;
                 }
 
-                listeners.delete_array_element(new_length, activation.context.gc_context);
-                listeners.delete(activation, &new_length.to_string());
+                listeners.delete_element(activation, new_length);
+                listeners.set_length(activation, new_length)?;
 
-                listeners.set_length(activation.context.gc_context, new_length);
-
-                removed = true;
+                return Ok(true.into());
             }
         }
     }
 
-    Ok(removed.into())
+    Ok(false.into())
 }
 
 pub fn broadcast_message<'gc>(
@@ -125,16 +151,16 @@ pub fn broadcast_internal<'gc>(
     let listeners = this.get("_listeners", activation)?;
 
     if let Value::Object(listeners) = listeners {
-        let len = listeners.length();
-        for i in 0..len {
-            let listener = listeners.array_element(i);
+        let length = listeners.length(activation)?;
+        for i in 0..length {
+            let listener = listeners.get_element(activation, i);
 
             if let Value::Object(listener) = listener {
                 listener.call_method(method_name, call_args, activation)?;
             }
         }
 
-        Ok(len > 0)
+        Ok(length > 0)
     } else {
         Ok(false)
     }
@@ -192,68 +218,4 @@ pub fn initialize_internal<'gc>(
         functions.broadcast_message.into(),
         Attribute::DONT_DELETE | Attribute::DONT_ENUM,
     );
-}
-
-pub fn create<'gc>(
-    gc_context: MutationContext<'gc, '_>,
-    proto: Option<Object<'gc>>,
-    fn_proto: Object<'gc>,
-) -> (BroadcasterFunctions<'gc>, Object<'gc>) {
-    let mut as_broadcaster = ScriptObject::object(gc_context, proto);
-
-    as_broadcaster.force_set_function(
-        "initialize",
-        initialize,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    let add_listener = FunctionObject::function(
-        gc_context,
-        Executable::Native(add_listener),
-        Some(fn_proto),
-        fn_proto,
-    );
-    as_broadcaster.define_value(
-        gc_context,
-        "addListener",
-        add_listener.into(),
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-    );
-
-    let remove_listener = FunctionObject::function(
-        gc_context,
-        Executable::Native(remove_listener),
-        Some(fn_proto),
-        fn_proto,
-    );
-    as_broadcaster.define_value(
-        gc_context,
-        "removeListener",
-        remove_listener.into(),
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-    );
-
-    let broadcast_message = FunctionObject::function(
-        gc_context,
-        Executable::Native(broadcast_message),
-        Some(fn_proto),
-        fn_proto,
-    );
-    as_broadcaster.define_value(
-        gc_context,
-        "broadcastMessage",
-        broadcast_message.into(),
-        Attribute::DONT_DELETE | Attribute::DONT_ENUM,
-    );
-
-    (
-        BroadcasterFunctions {
-            add_listener,
-            remove_listener,
-            broadcast_message,
-        },
-        as_broadcaster.into(),
-    )
 }

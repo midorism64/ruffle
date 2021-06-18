@@ -497,7 +497,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     &params[..],
                     data.to_unbounded_subslice(actions).unwrap(),
                 ),
-                Action::DefineFunction2(func) => self.action_define_function_2(&func, &data),
+                Action::DefineFunction2(func) => self.action_define_function_2(&func, data),
                 Action::DefineLocal => self.action_define_local(),
                 Action::DefineLocal2 => self.action_define_local_2(),
                 Action::Delete => self.action_delete(),
@@ -592,7 +592,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     self.action_with(data.to_unbounded_subslice(actions).unwrap())
                 }
                 Action::Throw => self.action_throw(),
-                Action::Try(try_block) => self.action_try(&try_block, &data),
+                Action::Try(try_block) => self.action_try(&try_block, data),
                 _ => self.unknown_op(action),
             }
         } else {
@@ -775,7 +775,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     if let Ok(frame) = frame.parse().map(f64_to_wrapping_u32) {
                         // First try to parse as a frame number.
                         call_frame = Some((clip, frame));
-                    } else if let Some(frame) = clip.frame_label_to_number(&frame) {
+                    } else if let Some(frame) = clip.frame_label_to_number(frame) {
                         // Otherwise, it's a frame label.
                         call_frame = Some((clip, frame.into()));
                     }
@@ -859,7 +859,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             object.call("[Anonymous]", self, this, None, &args)?
         } else {
             // Call `this[method_name]`.
-            object.call_method(&method_name.as_str(), &args, self)?
+            object.call_method(method_name.as_str(), &args, self)?
         };
 
         self.context.avm1.push(result);
@@ -943,7 +943,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         if name.is_empty() {
             self.context.avm1.push(func_obj);
         } else {
-            self.define(name, func_obj);
+            self.define_local(name, func_obj)?;
         }
 
         Ok(FrameControl::Continue)
@@ -982,7 +982,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         if action_func.name.is_empty() {
             self.context.avm1.push(func_obj);
         } else {
-            self.define(&action_func.name.to_str_lossy(self.encoding()), func_obj);
+            self.define_local(&action_func.name.to_str_lossy(self.encoding()), func_obj)?;
         }
 
         Ok(FrameControl::Continue)
@@ -994,11 +994,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let value = self.context.avm1.pop();
         let name_val = self.context.avm1.pop();
         let name = name_val.coerce_to_string(self)?;
-        let scope = self.scope_cell();
-        scope
-            .write(self.context.gc_context)
-            .locals()
-            .set(&name, value, self)?;
+        self.define_local(&name, value)?;
         Ok(FrameControl::Continue)
     }
 
@@ -1009,10 +1005,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         let name = name_val.coerce_to_string(self)?;
         let scope = self.scope_cell();
         if !scope.read().locals().has_property(self, &name) {
-            scope
-                .write(self.context.gc_context)
-                .locals()
-                .set(&name, Value::Undefined, self)?;
+            self.define_local(&name, Value::Undefined)?;
         }
         Ok(FrameControl::Continue)
     }
@@ -1472,7 +1465,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     fn action_init_array(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let num_elements = self.context.avm1.pop().coerce_to_f64(self)?;
-        let result = if num_elements < 0.0 || num_elements > std::i32::MAX as f64 {
+        let result = if num_elements < 0.0 || num_elements > i32::MAX as f64 {
             // InitArray pops no args and pushes undefined if num_elements is out of range.
             Value::Undefined
         } else {
@@ -1480,8 +1473,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                 self.context.gc_context,
                 Some(self.context.avm1.prototypes.array),
             );
-            for i in 0..num_elements as usize {
-                array.set_array_element(i, self.context.avm1.pop(), self.context.gc_context);
+            for i in 0..num_elements as i32 {
+                let element = self.context.avm1.pop();
+                array.set_element(self, i, element).unwrap();
             }
             Value::Object(array.into())
         };
@@ -1492,7 +1486,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     fn action_init_object(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let num_props = self.context.avm1.pop().coerce_to_f64(self)?;
-        let result = if num_props < 0.0 || num_props > std::i32::MAX as f64 {
+        let result = if num_props < 0.0 || num_props > i32::MAX as f64 {
             // InitArray pops no args and pushes undefined if num_props is out of range.
             Value::Undefined
         } else {
@@ -1729,7 +1723,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             // Undefined/empty method name; construct `this` as a function.
             object.construct(self, &args)?
         } else {
-            let constructor = object.get(&method_name.as_str(), self)?;
+            let constructor = object.get(method_name.as_str(), self)?;
             if let Value::Object(constructor) = constructor {
                 // Construct `this[method_name]`.
                 constructor.construct(self, &args)?
@@ -2182,7 +2176,22 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
     }
 
     fn toggle_quality(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
-        // TODO(Herschel): Noop for now? Could chang anti-aliasing on render backend.
+        use crate::display_object::StageQuality;
+        // Toggle between `Low` and `High`/`Best` quality.
+        // This op remembers whether the stage quality was `Best` or higher, so we have to maintain
+        // the bitmap downsampling flag to ensure we toggle back to the proper quality.
+        let use_bitmap_downsamping = self.context.stage.use_bitmap_downsampling();
+        let new_quality = match self.context.stage.quality() {
+            StageQuality::High | StageQuality::Best => StageQuality::Low,
+            _ if use_bitmap_downsamping => StageQuality::Best,
+            _ => StageQuality::High,
+        };
+        self.context
+            .stage
+            .set_quality(self.context.gc_context, new_quality);
+        self.context
+            .stage
+            .set_use_bitmap_downsampling(self.context.gc_context, use_bitmap_downsamping);
         Ok(FrameControl::Continue)
     }
 
@@ -2266,7 +2275,6 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
         Ok(FrameControl::Continue)
     }
 
-    #[allow(unused_variables)]
     fn action_throw(&mut self) -> Result<FrameControl<'gc>, Error<'gc>> {
         let value = self.context.avm1.pop();
         avm_debug!(
@@ -2285,9 +2293,9 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
             // Undefined/null with is ignored.
             Value::Undefined | Value::Null => {
                 // Mimic Flash's error output.
-                let message =
-                    "Error: A 'with' action failed because the specified object did not exist.\n";
-                self.context.log.avm_trace(&message);
+                self.context.log.avm_trace(
+                    "Error: A 'with' action failed because the specified object did not exist.\n",
+                );
                 Ok(FrameControl::Continue)
             }
 
@@ -2567,7 +2575,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     is_slash_path = true;
                 }
                 path = path.get(3..).unwrap_or(&[]);
-                if let Some(parent) = object.as_display_object().and_then(|o| o.parent()) {
+                if let Some(parent) = object.as_display_object().and_then(|o| o.avm1_parent()) {
                     parent.object()
                 } else {
                     // Tried to get parent of root, bail out.
@@ -2615,7 +2623,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
                     {
                         child.object()
                     } else {
-                        object.get(&name, self).unwrap()
+                        object.get(name, self).unwrap()
                     }
                 }
             };
@@ -2766,7 +2774,7 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
         // Finally! It's a plain old variable name.
         // Resolve using scope chain, as normal.
-        self.resolve(&path)
+        self.resolve(path)
     }
 
     /// Sets the value referenced by a target path string.
@@ -2966,12 +2974,34 @@ impl<'a, 'gc, 'gc_context> Activation<'a, 'gc, 'gc_context> {
 
     /// Changes the target clip.
     pub fn set_target_clip(&mut self, value: Option<DisplayObject<'gc>>) {
-        self.target_clip = value;
+        // The target should revert to `None` if the clip is removed.
+        let is_clip_removed = value.map(|clip| clip.removed()).unwrap_or_default();
+        self.target_clip = if !is_clip_removed { value } else { None }
     }
 
-    /// Define a named local variable within this activation.
-    pub fn define(&self, name: &str, value: impl Into<Value<'gc>>) {
-        self.scope().define(name, value, self.context.gc_context)
+    /// Define a local property on the activation.
+    ///
+    /// If the property does not already exist on the local scope, it will created.
+    /// Otherwise, the existing property will be set to `value`. This does not crawl the scope
+    /// chain. Any properties deeper in the scope chain with the same name will be shadowed.
+    pub fn define_local(
+        &mut self,
+        name: &str,
+        value: impl Into<Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        let scope = self.scope;
+        let scope = scope.write(self.context.gc_context);
+        scope.define_local(name, value.into(), self)
+    }
+
+    /// Create a local property on the activation.
+    ///
+    /// This inserts a value as a stored property on the local scope. If the property already
+    /// exists, it will be forcefully overwritten. Used internally to initialize objects.
+    pub fn force_define_local(&mut self, name: &str, value: impl Into<Value<'gc>>) {
+        self.scope
+            .read()
+            .force_define_local(name, value.into(), self.context.gc_context)
     }
 
     /// Returns value of `this` as a reference.

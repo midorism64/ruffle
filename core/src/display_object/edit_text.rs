@@ -710,11 +710,11 @@ impl<'gc> EditText<'gc> {
                 write.drawing.set_fill_style(None);
             }
             write.drawing.draw_command(DrawCommand::MoveTo {
-                x: Twips::zero(),
-                y: Twips::zero(),
+                x: Twips::ZERO,
+                y: Twips::ZERO,
             });
             write.drawing.draw_command(DrawCommand::LineTo {
-                x: Twips::zero(),
+                x: Twips::ZERO,
                 y: bounds.y_max - bounds.y_min,
             });
             write.drawing.draw_command(DrawCommand::LineTo {
@@ -723,11 +723,11 @@ impl<'gc> EditText<'gc> {
             });
             write.drawing.draw_command(DrawCommand::LineTo {
                 x: bounds.x_max - bounds.x_min,
-                y: Twips::zero(),
+                y: Twips::ZERO,
             });
             write.drawing.draw_command(DrawCommand::LineTo {
-                x: Twips::zero(),
-                y: Twips::zero(),
+                x: Twips::ZERO,
+                y: Twips::ZERO,
             });
         }
     }
@@ -892,7 +892,7 @@ impl<'gc> EditText<'gc> {
                             });
                         }
                         _ => {
-                            context.transform_stack.push(&transform);
+                            context.transform_stack.push(transform);
                         }
                     }
 
@@ -930,8 +930,7 @@ impl<'gc> EditText<'gc> {
         }
 
         if let Some(drawing) = lbox.as_renderable_drawing() {
-            let movie = self.movie();
-            drawing.render(context, movie);
+            drawing.render(context);
         }
 
         context.transform_stack.pop();
@@ -959,12 +958,12 @@ impl<'gc> EditText<'gc> {
             let variable = (*var_path).to_string();
             drop(var_path);
 
-            let parent = self.parent().unwrap();
+            let parent = self.avm1_parent().unwrap();
 
             activation.run_with_child_frame_for_display_object(
                 "[Text Field Binding]",
                 parent,
-                activation.context.swf.header().version,
+                activation.context.swf.version(),
                 |activation| {
                     if let Ok(Some((object, property))) =
                         activation.resolve_variable_path(parent, &variable)
@@ -1038,7 +1037,7 @@ impl<'gc> EditText<'gc> {
                 drop(variable);
 
                 if let Ok(Some((object, property))) =
-                    activation.resolve_variable_path(self.parent().unwrap(), &variable_path)
+                    activation.resolve_variable_path(self.avm1_parent().unwrap(), &variable_path)
                 {
                     let text = if self.0.read().is_html {
                         let html_tree = self.html_tree(&mut activation.context).as_node();
@@ -1052,8 +1051,8 @@ impl<'gc> EditText<'gc> {
                     // (virtual property changes do not affect the text field)
                     activation.run_with_child_frame_for_display_object(
                         "[Propagate Text Binding]",
-                        self.parent().unwrap(),
-                        activation.context.swf.header().version,
+                        self.avm1_parent().unwrap(),
+                        activation.context.swf.version(),
                         |activation| {
                             let _ = object.set(
                                 property,
@@ -1123,7 +1122,7 @@ impl<'gc> EditText<'gc> {
                     |pos, _transform, _glyph: &Glyph, advance, x| {
                         if local_position.0 >= x
                             && local_position.0 <= x + advance
-                            && local_position.1 >= Twips::zero()
+                            && local_position.1 >= Twips::ZERO
                             && local_position.1 <= params.height()
                         {
                             if local_position.0 >= x + (advance / 2) {
@@ -1204,7 +1203,7 @@ impl<'gc> EditText<'gc> {
 
             if changed {
                 let globals = context.avm1.global_object_cell();
-                let swf_version = context.swf.header().version;
+                let swf_version = context.swf.version();
                 let mut activation = Avm1Activation::from_nothing(
                     context.reborrow(),
                     ActivationIdentifier::root("[Propagate Text Binding]"),
@@ -1218,6 +1217,61 @@ impl<'gc> EditText<'gc> {
         }
     }
 
+    /// Listens for keyboard text control commands.
+    ///
+    /// TODO: Add explicit text control events (#4452).
+    pub fn handle_text_control_event(
+        self,
+        context: &mut UpdateContext<'_, 'gc, '_>,
+        event: ClipEvent,
+    ) -> ClipEventResult {
+        if let ClipEvent::KeyPress { key_code } = event {
+            let mut edit_text = self.0.write(context.gc_context);
+            let selection = edit_text.selection;
+            if let Some(mut selection) = selection {
+                let text = edit_text.text_spans.text();
+                let length = text.len();
+                match key_code {
+                    ButtonKeyCode::Left => {
+                        if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
+                            && selection.to > 0
+                        {
+                            selection.to = string_utils::prev_char_boundary(text, selection.to);
+                            if !context.ui.is_key_down(KeyCode::Shift) {
+                                selection.from = selection.to;
+                            }
+                        } else if !context.ui.is_key_down(KeyCode::Shift) {
+                            selection.to = selection.start();
+                            selection.from = selection.to;
+                        }
+                        selection.clamp(length);
+                        edit_text.selection = Some(selection);
+                        return ClipEventResult::Handled;
+                    }
+                    ButtonKeyCode::Right => {
+                        if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
+                            && selection.to < length
+                        {
+                            selection.to = string_utils::next_char_boundary(text, selection.to);
+                            if !context.ui.is_key_down(KeyCode::Shift) {
+                                selection.from = selection.to;
+                            }
+                        } else if !context.ui.is_key_down(KeyCode::Shift) {
+                            selection.to = selection.end();
+                            selection.from = selection.to;
+                        }
+                        selection.clamp(length);
+                        edit_text.selection = Some(selection);
+                        return ClipEventResult::Handled;
+                    }
+                    _ => (),
+                }
+            }
+        }
+
+        ClipEventResult::NotHandled
+    }
+
     fn initialize_as_broadcaster(&self, activation: &mut Avm1Activation<'_, 'gc, '_>) {
         if let Avm1Value::Object(object) = self.object() {
             activation.context.avm1.broadcaster_functions().initialize(
@@ -1227,15 +1281,13 @@ impl<'gc> EditText<'gc> {
             );
 
             if let Ok(Avm1Value::Object(listeners)) = object.get("_listeners", activation) {
-                if listeners.length() == 0 {
+                let length = listeners.length(activation);
+                if matches!(length, Ok(0)) {
                     // Add the TextField as its own listener to match Flash's behavior
                     // This makes it so that the TextField's handlers are called before other listeners'.
-                    listeners.set_array_element(0, object.into(), activation.context.gc_context);
+                    let _ = listeners.set_element(activation, 0, object.into());
                 } else {
-                    log::warn!(
-                        "_listeners should be empty, but its length is {}",
-                        listeners.length()
-                    );
+                    log::warn!("_listeners should be empty");
                 }
             }
         }
@@ -1337,8 +1389,7 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
 
     /// Construct objects placed on this frame.
     fn construct_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
-        if self.vm_type(context) == AvmType::Avm2 && matches!(self.object2(), Avm2Value::Undefined)
-        {
+        if self.avm_type() == AvmType::Avm2 && matches!(self.object2(), Avm2Value::Undefined) {
             self.construct_as_avm2_object(context, (*self).into());
         }
     }
@@ -1360,6 +1411,12 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         run_frame: bool,
     ) {
         self.set_default_instance_name(context);
+
+        if self.avm_type() == AvmType::Avm1 {
+            context
+                .avm1
+                .add_to_exec_list(context.gc_context, (*self).into());
+        }
 
         let mut text = self.0.write(context.gc_context);
         text.document = text
@@ -1479,8 +1536,6 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             return;
         }
 
-        let movie = self.movie();
-
         let edit_text = self.0.read();
         context.transform_stack.push(&Transform {
             matrix: Matrix {
@@ -1491,15 +1546,15 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             ..Default::default()
         });
 
-        edit_text.drawing.render(context, movie);
+        edit_text.drawing.render(context);
 
         context.renderer.push_mask();
         let mask = Matrix::create_box(
             edit_text.bounds.width().to_pixels() as f32,
             edit_text.bounds.height().to_pixels() as f32,
             0.0,
-            Twips::zero(),
-            Twips::zero(),
+            Twips::ZERO,
+            Twips::ZERO,
         );
         context.renderer.draw_rect(
             Color::from_rgb(0, 0xff),
@@ -1600,15 +1655,15 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
     fn mouse_pick(
         &self,
         context: &mut UpdateContext<'_, 'gc, '_>,
-        self_node: DisplayObject<'gc>,
         point: (Twips, Twips),
+        _require_button_mode: bool,
     ) -> Option<DisplayObject<'gc>> {
         // The button is hovered if the mouse is over any child nodes.
         if self.visible()
             && self.is_selectable()
             && self.hit_test_shape(context, point, HitTestOptions::MOUSE_PICK)
         {
-            Some(self_node)
+            Some((*self).into())
         } else {
             None
         }
@@ -1636,65 +1691,21 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
         context: &mut UpdateContext<'_, 'gc, '_>,
         event: ClipEvent,
     ) -> ClipEventResult {
-        match event {
-            ClipEvent::Press => {
-                let tracker = context.focus_tracker;
-                tracker.set(Some((*self).into()), context);
-                if let Some(position) = self
-                    .screen_position_to_index(*context.mouse_position)
-                    .map(TextSelection::for_position)
-                {
-                    self.0.write(context.gc_context).selection = Some(position);
-                } else {
-                    self.0.write(context.gc_context).selection =
-                        Some(TextSelection::for_position(self.text_length()));
-                }
-                ClipEventResult::Handled
+        if event == ClipEvent::Press {
+            let tracker = context.focus_tracker;
+            tracker.set(Some((*self).into()), context);
+            if let Some(position) = self
+                .screen_position_to_index(*context.mouse_position)
+                .map(TextSelection::for_position)
+            {
+                self.0.write(context.gc_context).selection = Some(position);
+            } else {
+                self.0.write(context.gc_context).selection =
+                    Some(TextSelection::for_position(self.text_length()));
             }
-            ClipEvent::KeyPress { key_code } => {
-                let mut edit_text = self.0.write(context.gc_context);
-                let selection = edit_text.selection;
-                if let Some(mut selection) = selection {
-                    let text = edit_text.text_spans.text();
-                    let length = text.len();
-                    match key_code {
-                        ButtonKeyCode::Left => {
-                            if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
-                                && selection.to > 0
-                            {
-                                selection.to = string_utils::prev_char_boundary(text, selection.to);
-                                if !context.ui.is_key_down(KeyCode::Shift) {
-                                    selection.from = selection.to;
-                                }
-                            } else if !context.ui.is_key_down(KeyCode::Shift) {
-                                selection.to = selection.start();
-                                selection.from = selection.to;
-                            }
-                        }
-                        ButtonKeyCode::Right => {
-                            if (context.ui.is_key_down(KeyCode::Shift) || selection.is_caret())
-                                && selection.to < length
-                            {
-                                selection.to = string_utils::next_char_boundary(text, selection.to);
-                                if !context.ui.is_key_down(KeyCode::Shift) {
-                                    selection.from = selection.to;
-                                }
-                            } else if !context.ui.is_key_down(KeyCode::Shift) {
-                                selection.to = selection.end();
-                                selection.from = selection.to;
-                            }
-                        }
-                        _ => {}
-                    }
-                    selection.clamp(length);
-                    edit_text.selection = Some(selection);
-                    ClipEventResult::Handled
-                } else {
-                    ClipEventResult::NotHandled
-                }
-            }
-            _ => ClipEventResult::NotHandled,
+            return ClipEventResult::Handled;
         }
+        ClipEventResult::NotHandled
     }
 }
 

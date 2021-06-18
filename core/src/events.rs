@@ -1,4 +1,4 @@
-use num_enum::{IntoPrimitive, TryFromPrimitive};
+use swf::ClipEventFlag;
 
 #[derive(Debug)]
 pub enum PlayerEvent {
@@ -77,8 +77,44 @@ impl ClipEvent {
         "onRollOver",
     ];
 
+    pub const BUTTON_EVENT_FLAGS: ClipEventFlag = ClipEventFlag::from_bits_truncate(
+        ClipEventFlag::DRAG_OUT.bits()
+            | ClipEventFlag::DRAG_OVER.bits()
+            | ClipEventFlag::KEY_PRESS.bits()
+            | ClipEventFlag::PRESS.bits()
+            | ClipEventFlag::ROLL_OUT.bits()
+            | ClipEventFlag::ROLL_OVER.bits()
+            | ClipEventFlag::RELEASE.bits()
+            | ClipEventFlag::RELEASE_OUTSIDE.bits(),
+    );
+
+    /// Returns the `swf::ClipEventFlag` cooresponding to this event type.
+    pub const fn flag(self) -> ClipEventFlag {
+        match self {
+            ClipEvent::Construct => ClipEventFlag::CONSTRUCT,
+            ClipEvent::Data => ClipEventFlag::DATA,
+            ClipEvent::DragOut => ClipEventFlag::DRAG_OUT,
+            ClipEvent::DragOver => ClipEventFlag::DRAG_OVER,
+            ClipEvent::EnterFrame => ClipEventFlag::ENTER_FRAME,
+            ClipEvent::Initialize => ClipEventFlag::INITIALIZE,
+            ClipEvent::KeyDown => ClipEventFlag::KEY_DOWN,
+            ClipEvent::KeyPress { .. } => ClipEventFlag::KEY_PRESS,
+            ClipEvent::KeyUp => ClipEventFlag::KEY_UP,
+            ClipEvent::Load => ClipEventFlag::LOAD,
+            ClipEvent::MouseDown => ClipEventFlag::MOUSE_DOWN,
+            ClipEvent::MouseMove => ClipEventFlag::MOUSE_MOVE,
+            ClipEvent::MouseUp => ClipEventFlag::MOUSE_UP,
+            ClipEvent::Press => ClipEventFlag::PRESS,
+            ClipEvent::RollOut => ClipEventFlag::ROLL_OUT,
+            ClipEvent::RollOver => ClipEventFlag::ROLL_OVER,
+            ClipEvent::Release => ClipEventFlag::RELEASE,
+            ClipEvent::ReleaseOutside => ClipEventFlag::RELEASE_OUTSIDE,
+            ClipEvent::Unload => ClipEventFlag::UNLOAD,
+        }
+    }
+
     /// Indicates that the event should be propagated down to children.
-    pub fn propagates(self) -> bool {
+    pub const fn propagates(self) -> bool {
         matches!(
             self,
             Self::MouseUp
@@ -91,27 +127,17 @@ impl ClipEvent {
     }
 
     /// Indicates whether this is an event type used by Buttons (i.e., on that can be used in an `on` handler in Flash).
-    pub fn is_button_event(self) -> bool {
-        matches!(
-            self,
-            Self::DragOut
-                | Self::DragOver
-                | Self::KeyPress { .. }
-                | Self::Press
-                | Self::RollOut
-                | Self::RollOver
-                | Self::Release
-                | Self::ReleaseOutside
-        )
+    pub const fn is_button_event(self) -> bool {
+        self.flag().contains(Self::BUTTON_EVENT_FLAGS)
     }
 
     /// Indicates whether this is a keyboard event type (keyUp, keyDown, keyPress).
-    pub fn is_key_event(self) -> bool {
+    pub const fn is_key_event(self) -> bool {
         matches!(self, Self::KeyDown | Self::KeyUp | Self::KeyPress { .. })
     }
 
     /// Returns the method name of the event handler for this event.
-    pub fn method_name(self) -> Option<&'static str> {
+    pub const fn method_name(self) -> Option<&'static str> {
         match self {
             ClipEvent::Construct => None,
             ClipEvent::Data => Some("onData"),
@@ -137,8 +163,7 @@ impl ClipEvent {
 }
 
 /// Flash virtual keycode.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
-#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum KeyCode {
     Unknown = 0,
     Backspace = 8,
@@ -238,13 +263,18 @@ pub enum KeyCode {
     Apostrophe = 222,
 }
 
+impl KeyCode {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
+}
+
 /// Key codes for SWF4 keyPress button handlers. These are annoyingly different than
 /// `Key.isDown` key codes.
 /// TODO: After 18, these are mostly ASCII... should we just use u8? How are different
 /// keyboard layouts/languages handled?
 /// SWF19 pp. 198-199
-#[derive(Debug, PartialEq, Eq, Copy, Clone, TryFromPrimitive, IntoPrimitive)]
-#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, FromPrimitive)]
 pub enum ButtonKeyCode {
     Unknown = 0,
     Left = 1,
@@ -356,6 +386,12 @@ pub enum ButtonKeyCode {
     Pipe = 124,
     RBrace = 125,
     Tilde = 126,
+}
+
+impl ButtonKeyCode {
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num_traits::FromPrimitive::from_u8(n)
+    }
 }
 
 pub fn key_code_to_button_key_code(key_code: KeyCode) -> Option<ButtonKeyCode> {

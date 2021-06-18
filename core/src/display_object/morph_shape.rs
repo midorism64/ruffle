@@ -6,7 +6,7 @@ use crate::tag_utils::SwfMovie;
 use crate::types::{Degrees, Percent};
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use std::sync::Arc;
-use swf::Twips;
+use swf::{Fixed16, Fixed8, Twips};
 
 #[derive(Clone, Debug, Collect, Copy)]
 #[collect(no_drop)]
@@ -53,6 +53,18 @@ impl<'gc> TDisplayObject<'gc> for MorphShape<'gc> {
 
     fn as_morph_shape(&self) -> Option<Self> {
         Some(*self)
+    }
+
+    fn replace_with(&self, context: &mut UpdateContext<'_, 'gc, '_>, id: CharacterId) {
+        if let Some(new_morph_shape) = context
+            .library
+            .library_for_movie_mut(self.movie().unwrap())
+            .get_morph_shape(id)
+        {
+            self.0.write(context.gc_context).static_data = new_morph_shape.0.read().static_data;
+        } else {
+            log::warn!("PlaceObject: expected morph shape at character ID {}", id);
+        }
     }
 
     fn run_frame(&self, _context: &mut UpdateContext) {
@@ -142,7 +154,10 @@ impl MorphShapeStatic {
             return;
         }
 
-        let library = context.library.library_for_movie(Arc::clone(&self.movie));
+        let library = context
+            .library
+            .library_for_movie(Arc::clone(&self.movie))
+            .unwrap();
 
         // Interpolate MorphShapes into a Shape.
         use swf::{FillStyle, LineStyle, ShapeRecord, ShapeStyles};
@@ -180,10 +195,10 @@ impl MorphShapeStatic {
         let mut end_iter = self.end.shape.iter();
         let mut start = start_iter.next();
         let mut end = end_iter.next();
-        let mut start_x = Twips::zero();
-        let mut start_y = Twips::zero();
-        let mut end_x = Twips::zero();
-        let mut end_y = Twips::zero();
+        let mut start_x = Twips::ZERO;
+        let mut start_y = Twips::ZERO;
+        let mut end_x = Twips::ZERO;
+        let mut end_y = Twips::ZERO;
         // TODO: Feels like this could be cleaned up a bit.
         // We step through both the start records and end records, interpolating edges pairwise.
         // Fill style/line style changes should only appear in the start records.
@@ -269,8 +284,9 @@ impl MorphShapeStatic {
             shape,
         };
 
+        let shape_handle = context.renderer.register_shape((&shape).into(), library);
         let frame = Frame {
-            shape_handle: context.renderer.register_shape((&shape).into(), library),
+            shape_handle,
             shape,
             bounds: bounds.into(),
         };
@@ -369,7 +385,7 @@ fn lerp_fill(start: &swf::FillStyle, end: &swf::FillStyle, a: f32, b: f32) -> sw
             },
         ) => FillStyle::FocalGradient {
             gradient: lerp_gradient(start, end, a, b),
-            focal_point: a * start_focal + b * end_focal,
+            focal_point: *start_focal * Fixed8::from_f32(a) + *end_focal * Fixed8::from_f32(b),
         },
 
         // All other combinations should not occur, because SWF stores the start/end fill as the same type, always.
@@ -482,11 +498,13 @@ fn lerp_edges(
 fn lerp_matrix(start: &swf::Matrix, end: &swf::Matrix, a: f32, b: f32) -> swf::Matrix {
     // TODO: Lerping a matrix element-wise is geometrically wrong,
     // but I doubt Flash is decomposing the matrix into scale-rotate-translate?
+    let af = Fixed16::from_f32(a);
+    let bf = Fixed16::from_f32(b);
     swf::Matrix {
-        a: start.a * a + end.a * b,
-        b: start.b * a + end.b * b,
-        c: start.c * a + end.c * b,
-        d: start.d * a + end.d * b,
+        a: start.a * af + end.a * bf,
+        b: start.b * af + end.b * bf,
+        c: start.c * af + end.c * bf,
+        d: start.d * af + end.d * bf,
         tx: lerp_twips(start.tx, end.tx, a, b),
         ty: lerp_twips(start.ty, end.ty, a, b),
     }

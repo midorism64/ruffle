@@ -1,12 +1,64 @@
 #[macro_export]
-macro_rules! impl_custom_object_without_set {
+macro_rules! impl_custom_object {
     ($field:ident) => {
+        crate::impl_custom_object!($field { set(proto: self); });
+    };
+
+    (@extra $field:ident set(proto: self)) => {
+        fn set_local(
+            &self,
+            name: &str,
+            value: crate::avm1::Value<'gc>,
+            activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
+            this: crate::avm1::Object<'gc>,
+            base_proto: Option<crate::avm1::Object<'gc>>,
+        ) -> Result<(), crate::avm1::Error<'gc>> {
+            self.0.read().$field.set_local(name, value, activation, this, base_proto)
+        }
+    };
+
+    (@extra $field:ident set(proto: $proto:ident)) => {
+        fn set_local(
+            &self,
+            name: &str,
+            value: crate::avm1::Value<'gc>,
+            activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
+            this: crate::avm1::Object<'gc>,
+            _base_proto: Option<crate::avm1::Object<'gc>>,
+        ) -> Result<(), crate::avm1::Error<'gc>> {
+            self.0.read().$field.set_local(name, value, activation, this, Some(activation.context.avm1.prototypes.$proto))
+        }
+    };
+
+    (@extra $field:ident bare_object($as_obj:ident -> $obj_type:ident :: $new:ident)) => {
+        fn $as_obj(&self) -> Option<$obj_type<'gc>> {
+            Some(*self)
+        }
+
+        fn create_bare_object(
+            &self,
+            activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
+            this: crate::avm1::Object<'gc>,
+        ) -> Result<crate::avm1::Object<'gc>, crate::avm1::Error<'gc>> {
+            Ok($obj_type::$new(activation.context.gc_context, Some(this)).into())
+        }
+    };
+
+    ($field:ident {
+        $(
+            $extra_name:ident($($extra:tt)*);
+        )*
+    }) => {
+        $(
+            crate::impl_custom_object!(@extra $field $extra_name($($extra)*));
+        )*
+
         fn get_local(
             &self,
             name: &str,
             activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
             this: crate::avm1::Object<'gc>,
-        ) -> Result<crate::avm1::Value<'gc>, crate::avm1::Error<'gc>> {
+        ) -> Option<Result<crate::avm1::Value<'gc>, crate::avm1::Error<'gc>>> {
             self.0.read().$field.get_local(name, activation, this)
         }
 
@@ -98,7 +150,6 @@ macro_rules! impl_custom_object_without_set {
         fn add_property_with_case(
             &self,
             activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
-            gc_context: gc_arena::MutationContext<'gc, '_>,
             name: &str,
             get: crate::avm1::object::Object<'gc>,
             set: Option<crate::avm1::object::Object<'gc>>,
@@ -107,7 +158,7 @@ macro_rules! impl_custom_object_without_set {
             self.0
                 .read()
                 .$field
-                .add_property_with_case(activation, gc_context, name, get, set, attributes)
+                .add_property_with_case(activation, name, get, set, attributes)
         }
 
         fn has_property(
@@ -149,10 +200,6 @@ macro_rules! impl_custom_object_without_set {
             self.0.read().$field.get_keys(activation)
         }
 
-        fn as_string(&self) -> std::borrow::Cow<str> {
-            std::borrow::Cow::Owned(self.0.read().$field.as_string().into_owned())
-        }
-
         fn type_of(&self) -> &'static str {
             self.0.read().$field.type_of()
         }
@@ -180,46 +227,33 @@ macro_rules! impl_custom_object_without_set {
             self.0.as_ptr() as *const crate::avm1::ObjectPtr
         }
 
-        fn length(&self) -> usize {
-            self.0.read().$field.length()
+        fn length(&self, activation: &mut crate::avm1::Activation<'_, 'gc, '_>) -> Result<i32, crate::avm1::Error<'gc>> {
+            self.0.read().$field.length(activation)
         }
 
-        fn array(&self) -> Vec<crate::avm1::Value<'gc>> {
-            self.0.read().$field.array()
+        fn set_length(&self, activation: &mut crate::avm1::Activation<'_, 'gc, '_>, length: i32) -> Result<(), crate::avm1::Error<'gc>> {
+            self.0.read().$field.set_length(activation, length)
         }
 
-        fn set_length(&self, gc_context: gc_arena::MutationContext<'gc, '_>, length: usize) {
-            self.0.read().$field.set_length(gc_context, length)
+        fn has_element(&self, activation: &mut crate::avm1::Activation<'_, 'gc, '_>, index: i32) -> bool {
+            self.0.read().$field.has_element(activation, index)
         }
 
-        fn array_element(&self, index: usize) -> crate::avm1::Value<'gc> {
-            self.0.read().$field.array_element(index)
+        fn get_element(&self, activation: &mut crate::avm1::Activation<'_, 'gc, '_>, index: i32) -> crate::avm1::Value<'gc> {
+            self.0.read().$field.get_element(activation, index)
         }
 
-        fn set_array_element(
-            &self,
-            index: usize,
-            value: crate::avm1::Value<'gc>,
-            gc_context: gc_arena::MutationContext<'gc, '_>,
-        ) -> usize {
-            self.0
-                .read()
-                .$field
-                .set_array_element(index, value, gc_context)
+        fn set_element(&self, activation: &mut crate::avm1::Activation<'_, 'gc, '_>, index: i32, value: crate::avm1::Value<'gc>) -> Result<(), crate::avm1::Error<'gc>> {
+            self.0.read().$field.set_element(activation, index, value)
         }
 
-        fn delete_array_element(
-            &self,
-            index: usize,
-            gc_context: gc_arena::MutationContext<'gc, '_>,
-        ) {
-            self.0.read().$field.delete_array_element(index, gc_context)
+        fn delete_element(&self, activation: &mut crate::avm1::Activation<'_, 'gc, '_>, index: i32) -> bool {
+            self.0.read().$field.delete_element(activation, index)
         }
 
         fn set_watcher(
             &self,
             activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
-            gc_context: gc_arena::MutationContext<'gc, '_>,
             name: std::borrow::Cow<str>,
             callback: crate::avm1::object::Object<'gc>,
             user_data: crate::avm1::Value<'gc>,
@@ -227,35 +261,15 @@ macro_rules! impl_custom_object_without_set {
             self.0
                 .read()
                 .$field
-                .set_watcher(activation, gc_context, name, callback, user_data);
+                .set_watcher(activation, name, callback, user_data);
         }
 
         fn remove_watcher(
             &self,
             activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
-            gc_context: gc_arena::MutationContext<'gc, '_>,
             name: std::borrow::Cow<str>,
         ) -> bool {
-            self.0
-                .read()
-                .$field
-                .remove_watcher(activation, gc_context, name)
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_custom_object {
-    ($field:ident) => {
-        crate::impl_custom_object_without_set!($field);
-
-        fn set(
-            &self,
-            name: &str,
-            value: crate::avm1::Value<'gc>,
-            activation: &mut crate::avm1::Activation<'_, 'gc, '_>,
-        ) -> Result<(), crate::avm1::Error<'gc>> {
-            self.0.read().$field.set(name, value, activation)
+            self.0.read().$field.remove_watcher(activation, name)
         }
     };
 }

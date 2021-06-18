@@ -5,7 +5,7 @@ use lyon::tessellation::{
     FillTessellator, FillVertex, StrokeTessellator, StrokeVertex, StrokeVertexConstructor,
 };
 use lyon::tessellation::{FillOptions, StrokeOptions};
-use ruffle_core::backend::render::{srgb_to_linear, swf, BitmapHandle};
+use ruffle_core::backend::render::{srgb_to_linear, swf, BitmapHandle, BitmapSource};
 use ruffle_core::shape_utils::{DistilledShape, DrawCommand, DrawPath};
 
 pub struct ShapeTessellator {
@@ -21,10 +21,11 @@ impl ShapeTessellator {
         }
     }
 
-    pub fn tessellate_shape<F>(&mut self, shape: DistilledShape, get_bitmap: F) -> Mesh
-    where
-        F: Fn(swf::CharacterId) -> Option<(u32, u32, BitmapHandle)>,
-    {
+    pub fn tessellate_shape(
+        &mut self,
+        shape: DistilledShape,
+        bitmap_source: &dyn BitmapSource,
+    ) -> Mesh {
         let mut mesh = Vec::new();
 
         let mut lyon_mesh: VertexBuffers<_, u32> = VertexBuffers::new();
@@ -87,7 +88,7 @@ impl ShapeTessellator {
                             DrawType::Gradient(swf_gradient_to_uniforms(
                                 GradientType::Linear,
                                 gradient,
-                                0.0,
+                                swf::Fixed8::ZERO,
                             )),
                             &mut mesh,
                             &mut lyon_mesh,
@@ -117,7 +118,7 @@ impl ShapeTessellator {
                             DrawType::Gradient(swf_gradient_to_uniforms(
                                 GradientType::Radial,
                                 gradient,
-                                0.0,
+                                swf::Fixed8::ZERO,
                             )),
                             &mut mesh,
                             &mut lyon_mesh,
@@ -181,15 +182,15 @@ impl ShapeTessellator {
                             continue;
                         }
 
-                        if let Some((bitmap_width, bitmap_height, bitmap)) = get_bitmap(*id) {
+                        if let Some(bitmap) = bitmap_source.bitmap(*id) {
                             flush_draw(
                                 DrawType::Bitmap(Bitmap {
                                     matrix: swf_bitmap_to_gl_matrix(
-                                        *matrix,
-                                        bitmap_width,
-                                        bitmap_height,
+                                        (*matrix).into(),
+                                        bitmap.width.into(),
+                                        bitmap.height.into(),
                                     ),
-                                    bitmap,
+                                    bitmap: bitmap.handle,
                                     is_smoothed: *is_smoothed,
                                     is_repeating: *is_repeating,
                                 }),
@@ -232,6 +233,7 @@ impl ShapeTessellator {
                         swf::LineJoinStyle::Bevel => tessellation::LineJoin::Bevel,
                         swf::LineJoinStyle::Miter(limit) => {
                             // Avoid lyon assert with small miter limits.
+                            let limit = limit.to_f32();
                             if limit >= StrokeOptions::MINIMUM_MITER_LIMIT {
                                 options = options.with_miter_limit(limit);
                                 tessellation::LineJoin::MiterClip
@@ -299,7 +301,7 @@ pub struct Gradient {
     pub colors: Vec<[f32; 4]>,
     pub num_colors: usize,
     pub repeat_mode: swf::GradientSpread,
-    pub focal_point: f32,
+    pub focal_point: swf::Fixed8,
     pub interpolation: swf::GradientInterpolation,
 }
 
@@ -319,7 +321,7 @@ pub struct Bitmap {
 }
 
 #[allow(clippy::many_single_char_names)]
-fn swf_to_gl_matrix(m: swf::Matrix) -> [[f32; 3]; 3] {
+fn swf_to_gl_matrix(m: ruffle_core::matrix::Matrix) -> [[f32; 3]; 3] {
     let tx = m.tx.get() as f32;
     let ty = m.ty.get() as f32;
     let det = m.a * m.d - m.c * m.b;
@@ -343,7 +345,11 @@ fn swf_to_gl_matrix(m: swf::Matrix) -> [[f32; 3]; 3] {
 }
 
 #[allow(clippy::many_single_char_names)]
-fn swf_bitmap_to_gl_matrix(m: swf::Matrix, bitmap_width: u32, bitmap_height: u32) -> [[f32; 3]; 3] {
+fn swf_bitmap_to_gl_matrix(
+    m: ruffle_core::matrix::Matrix,
+    bitmap_width: u32,
+    bitmap_height: u32,
+) -> [[f32; 3]; 3] {
     let bitmap_width = bitmap_width as f32;
     let bitmap_height = bitmap_height as f32;
 
@@ -415,7 +421,7 @@ const MAX_GRADIENT_COLORS: usize = 15;
 fn swf_gradient_to_uniforms(
     gradient_type: GradientType,
     gradient: &swf::Gradient,
-    focal_point: f32,
+    focal_point: swf::Fixed8,
 ) -> Gradient {
     let mut colors: Vec<[f32; 4]> = Vec::with_capacity(8);
     let mut ratios: Vec<f32> = Vec::with_capacity(8);
@@ -439,7 +445,7 @@ fn swf_gradient_to_uniforms(
     }
 
     Gradient {
-        matrix: swf_to_gl_matrix(gradient.matrix),
+        matrix: swf_to_gl_matrix(gradient.matrix.into()),
         gradient_type,
         ratios,
         colors,

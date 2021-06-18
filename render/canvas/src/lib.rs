@@ -1,11 +1,11 @@
 use ruffle_core::backend::render::{
     swf::{self, CharacterId, GradientInterpolation, GradientSpread},
-    Bitmap, BitmapFormat, BitmapHandle, BitmapInfo, Color, JpegTagFormat, MovieLibrary,
-    RenderBackend, ShapeHandle, Transform,
+    Bitmap, BitmapFormat, BitmapHandle, BitmapInfo, BitmapSource, Color, JpegTagFormat,
+    NullBitmapSource, RenderBackend, ShapeHandle, Transform,
 };
 use ruffle_core::color_transform::ColorTransform;
+use ruffle_core::matrix::Matrix;
 use ruffle_core::shape_utils::{DistilledShape, DrawCommand};
-use ruffle_core::swf::Matrix;
 use ruffle_web_common::JsResult;
 use std::convert::TryInto;
 use wasm_bindgen::{JsCast, JsValue};
@@ -331,7 +331,7 @@ impl WebCanvasRenderBackend {
             && color_transform.a_add == 0
         {
             self.context
-                .set_global_alpha(f64::from(color_transform.a_mult) / 255.0);
+                .set_global_alpha(f64::from(color_transform.a_mult));
         } else {
             let mult = color_transform.mult_rgba_normalized();
             let add = color_transform.add_rgba_normalized();
@@ -419,19 +419,24 @@ impl RenderBackend for WebCanvasRenderBackend {
     fn register_shape(
         &mut self,
         shape: DistilledShape,
-        library: Option<&MovieLibrary<'_>>,
+        bitmap_source: &dyn BitmapSource,
     ) -> ShapeHandle {
         let handle = ShapeHandle(self.shapes.len());
 
         let data = swf_shape_to_canvas_commands(
             &shape,
-            library,
+            bitmap_source,
             &self.bitmaps,
             self.pixelated_property_value,
             &self.context,
         )
         .unwrap_or_else(|| {
-            swf_shape_to_svg(shape, library, &self.bitmaps, self.pixelated_property_value)
+            swf_shape_to_svg(
+                shape,
+                bitmap_source,
+                &self.bitmaps,
+                self.pixelated_property_value,
+            )
         });
 
         self.shapes.push(data);
@@ -442,25 +447,30 @@ impl RenderBackend for WebCanvasRenderBackend {
     fn replace_shape(
         &mut self,
         shape: DistilledShape,
-        library: Option<&MovieLibrary<'_>>,
+        bitmap_source: &dyn BitmapSource,
         handle: ShapeHandle,
     ) {
         let data = swf_shape_to_canvas_commands(
             &shape,
-            library,
+            bitmap_source,
             &self.bitmaps,
             self.pixelated_property_value,
             &self.context,
         )
         .unwrap_or_else(|| {
-            swf_shape_to_svg(shape, library, &self.bitmaps, self.pixelated_property_value)
+            swf_shape_to_svg(
+                shape,
+                bitmap_source,
+                &self.bitmaps,
+                self.pixelated_property_value,
+            )
         });
         self.shapes[handle.0] = data;
     }
 
     fn register_glyph_shape(&mut self, glyph: &swf::Glyph) -> ShapeHandle {
         let shape = ruffle_core::shape_utils::swf_glyph_to_shape(glyph);
-        self.register_shape((&shape).into(), None)
+        self.register_shape((&shape).into(), &NullBitmapSource)
     }
 
     fn register_bitmap_jpeg(
@@ -568,13 +578,13 @@ impl RenderBackend for WebCanvasRenderBackend {
 
                         match xformed_fill_style.as_ref().unwrap_or(fill_style) {
                             CanvasFillStyle::Color(CanvasColor(color, ..)) => {
-                                self.context.set_fill_style(&JsValue::from_str(&color))
+                                self.context.set_fill_style(&JsValue::from_str(color))
                             }
                             CanvasFillStyle::Gradient(grad) => self.context.set_fill_style(grad),
                             CanvasFillStyle::Pattern(patt) => self.context.set_fill_style(patt),
                         };
 
-                        self.context.fill_with_path_2d(&path);
+                        self.context.fill_with_path_2d(path);
 
                         if xformed_fill_style.is_none() {
                             self.clear_color_filter();
@@ -591,12 +601,12 @@ impl RenderBackend for WebCanvasRenderBackend {
                         let xformed_stroke_style =
                             stroke_style.color_transform(&transform.color_transform);
                         self.context.set_line_width(*line_width);
-                        self.context.set_line_cap(&line_cap);
-                        self.context.set_line_join(&line_join);
+                        self.context.set_line_cap(line_cap);
+                        self.context.set_line_join(line_join);
                         self.context.set_miter_limit(*miter_limit);
                         self.context
                             .set_stroke_style(&JsValue::from_str(&xformed_stroke_style.0));
-                        self.context.stroke_with_path(&path);
+                        self.context.stroke_with_path(path);
                     }
                     CanvasDrawCommand::DrawImage {
                         image,
@@ -606,7 +616,7 @@ impl RenderBackend for WebCanvasRenderBackend {
                         self.set_color_filter(transform);
                         let _ = self
                             .context
-                            .draw_image_with_html_image_element(&image, *x_min, *y_min);
+                            .draw_image_with_html_image_element(image, *x_min, *y_min);
                         self.clear_color_filter();
                     }
                 }
@@ -672,7 +682,7 @@ impl RenderBackend for WebCanvasRenderBackend {
         self.color_matrix
             .set_attribute(
                 "values",
-                &"1.0 0 0 0 0 0 1.0 0 0 0 0 0 1.0 0 0 0 0 0 256.0 0",
+                "1.0 0 0 0 0 0 1.0 0 0 0 0 0 1.0 0 0 0 0 0 256.0 0",
             )
             .warn_on_error();
 
@@ -776,7 +786,7 @@ impl RenderBackend for WebCanvasRenderBackend {
 #[allow(clippy::cognitive_complexity)]
 fn swf_shape_to_svg(
     shape: DistilledShape,
-    library: Option<&MovieLibrary<'_>>,
+    bitmap_source: &dyn BitmapSource,
     bitmaps: &[BitmapData],
     pixelated_property_value: &str,
 ) -> ShapeData {
@@ -845,7 +855,7 @@ fn swf_shape_to_svg(
                             ty: swf::Twips::new(-16384),
                             ..Default::default()
                         };
-                        let gradient_matrix = gradient.matrix * shift;
+                        let gradient_matrix = Matrix::from(gradient.matrix) * shift;
 
                         let mut svg_gradient = LinearGradient::new()
                             .set("id", format!("f{}", num_defs))
@@ -904,7 +914,7 @@ fn swf_shape_to_svg(
                             d: 32768.0,
                             ..Default::default()
                         };
-                        let gradient_matrix = gradient.matrix * shift;
+                        let gradient_matrix = Matrix::from(gradient.matrix) * shift;
 
                         let mut svg_gradient = RadialGradient::new()
                             .set("id", format!("f{}", num_defs))
@@ -969,11 +979,11 @@ fn swf_shape_to_svg(
                             d: 32768.0,
                             ..Default::default()
                         };
-                        let gradient_matrix = gradient.matrix * shift;
+                        let gradient_matrix = Matrix::from(gradient.matrix) * shift;
 
                         let mut svg_gradient = RadialGradient::new()
                             .set("id", format!("f{}", num_defs))
-                            .set("fx", focal_point / 2.0)
+                            .set("fx", focal_point.to_f32() / 2.0)
                             .set("gradientUnits", "userSpaceOnUse")
                             .set("cx", "0")
                             .set("cy", "0")
@@ -1032,11 +1042,11 @@ fn swf_shape_to_svg(
                         is_smoothed,
                         is_repeating,
                     } => {
-                        if let Some(bitmap) = library
-                            .and_then(|lib| lib.get_bitmap(*id))
-                            .and_then(|bitmap| bitmaps.get(bitmap.bitmap_handle().0))
+                        if let Some(bitmap) = bitmap_source
+                            .bitmap(*id)
+                            .and_then(|bitmap| bitmaps.get(bitmap.handle.0))
                         {
-                            if !bitmap_defs.contains(&id) {
+                            if !bitmap_defs.contains(id) {
                                 let mut image = Image::new()
                                     .set("width", bitmap.width)
                                     .set("height", bitmap.height)
@@ -1155,7 +1165,7 @@ fn swf_shape_to_svg(
                     );
 
                 if let LineJoinStyle::Miter(miter_limit) = style.join_style {
-                    svg_path = svg_path.set("stroke-miterlimit", miter_limit);
+                    svg_path = svg_path.set("stroke-miterlimit", miter_limit.to_f32());
                 }
 
                 let mut data = Data::new();
@@ -1257,7 +1267,7 @@ fn draw_commands_to_path2d(commands: &[DrawCommand], is_closed: bool) -> Path2d 
 
 fn swf_shape_to_canvas_commands(
     shape: &DistilledShape,
-    library: Option<&MovieLibrary<'_>>,
+    bitmap_source: &dyn BitmapSource,
     bitmaps: &[BitmapData],
     _pixelated_property_value: &str,
     context: &CanvasRenderingContext2d,
@@ -1314,9 +1324,9 @@ fn swf_shape_to_canvas_commands(
                         is_smoothed,
                         is_repeating,
                     } => {
-                        if let Some(bitmap) = library
-                            .and_then(|lib| lib.get_bitmap(*id))
-                            .and_then(|bitmap| bitmaps.get(bitmap.bitmap_handle().0))
+                        if let Some(bitmap) = bitmap_source
+                            .bitmap(*id)
+                            .and_then(|bitmap| bitmaps.get(bitmap.handle.0))
                         {
                             let image = HtmlImageElement::new_with_width_and_height(
                                 bitmap.width,
@@ -1346,10 +1356,10 @@ fn swf_shape_to_canvas_commands(
 
                             let matrix = matrix_factory.create_svg_matrix();
 
-                            matrix.set_a(a.a);
-                            matrix.set_b(a.b);
-                            matrix.set_c(a.c);
-                            matrix.set_d(a.d);
+                            matrix.set_a(a.a.to_f32());
+                            matrix.set_b(a.b.to_f32());
+                            matrix.set_c(a.c.to_f32());
+                            matrix.set_d(a.d.to_f32());
                             matrix.set_e(a.tx.get() as f32);
                             matrix.set_f(a.ty.get() as f32);
 
@@ -1371,7 +1381,7 @@ fn swf_shape_to_canvas_commands(
 
                 let path = Path2d::new().unwrap();
                 path.add_path_with_transformation(
-                    &draw_commands_to_path2d(&commands, false),
+                    &draw_commands_to_path2d(commands, false),
                     &bounds_viewbox_matrix,
                 );
 
@@ -1411,12 +1421,12 @@ fn swf_shape_to_canvas_commands(
                 let (line_join, miter_limit) = match style.join_style {
                     LineJoinStyle::Round => ("round", 999_999.0),
                     LineJoinStyle::Bevel => ("bevel", 999_999.0),
-                    LineJoinStyle::Miter(ml) => ("miter", ml),
+                    LineJoinStyle::Miter(ml) => ("miter", ml.to_f32()),
                 };
 
                 let path = Path2d::new().unwrap();
                 path.add_path_with_transformation(
-                    &draw_commands_to_path2d(&commands, *is_closed),
+                    &draw_commands_to_path2d(commands, *is_closed),
                     &bounds_viewbox_matrix,
                 );
 

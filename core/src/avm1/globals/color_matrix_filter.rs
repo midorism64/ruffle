@@ -2,11 +2,14 @@
 
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
-use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::object::color_matrix_filter::ColorMatrixFilterObject;
-use crate::avm1::property::Attribute;
+use crate::avm1::property_decl::{define_properties_on, Declaration};
 use crate::avm1::{Object, ScriptObject, TObject, Value};
 use gc_arena::MutationContext;
+
+const PROTO_DECLS: &[Declaration] = declare_properties! {
+    "matrix" => property(matrix, set_matrix);
+};
 
 pub fn constructor<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
@@ -28,13 +31,11 @@ pub fn matrix<'gc>(
             activation.context.gc_context,
             Some(activation.context.avm1.prototypes.array),
         );
-
-        let arr = filter.matrix();
-
-        for (index, item) in arr.iter().copied().enumerate() {
-            array.set_array_element(index, item.into(), activation.context.gc_context);
+        for (i, item) in filter.matrix().iter().copied().enumerate() {
+            array
+                .set_element(activation, i as i32, item.into())
+                .unwrap();
         }
-
         return Ok(array.into());
     }
 
@@ -49,12 +50,13 @@ pub fn set_matrix<'gc>(
     let matrix = args.get(0).unwrap_or(&Value::Undefined);
 
     if let Value::Object(obj) = matrix {
-        let arr_len = obj.length().min(20);
+        let length = obj.length(activation)?.min(20);
         let mut arr = [0.0; 4 * 5];
 
-        for (index, item) in arr.iter_mut().enumerate().take(arr_len) {
-            let elem = obj.array_element(index).coerce_to_f64(activation)?;
-            *item = elem;
+        for (i, item) in arr.iter_mut().enumerate().take(length as usize) {
+            *item = obj
+                .get_element(activation, i as i32)
+                .coerce_to_f64(activation)?;
         }
 
         if let Some(filter) = this.as_color_matrix_filter_object() {
@@ -72,24 +74,6 @@ pub fn create_proto<'gc>(
 ) -> Object<'gc> {
     let color_matrix_filter = ColorMatrixFilterObject::empty_object(gc_context, Some(proto));
     let object = color_matrix_filter.as_script_object().unwrap();
-
-    object.add_property(
-        gc_context,
-        "matrix",
-        FunctionObject::function(
-            gc_context,
-            Executable::Native(matrix),
-            Some(fn_proto),
-            fn_proto,
-        ),
-        Some(FunctionObject::function(
-            gc_context,
-            Executable::Native(set_matrix),
-            Some(fn_proto),
-            fn_proto,
-        )),
-        Attribute::empty(),
-    );
-
+    define_properties_on(PROTO_DECLS, gc_context, object, fn_proto);
     color_matrix_filter.into()
 }

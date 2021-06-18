@@ -288,6 +288,12 @@ impl<'gc> TDisplayObject<'gc> for Video<'gc> {
         _instantiated_by: Instantiator,
         run_frame: bool,
     ) {
+        if self.avm_type() == AvmType::Avm1 {
+            context
+                .avm1
+                .add_to_exec_list(context.gc_context, (*self).into());
+        }
+
         let mut write = self.0.write(context.gc_context);
 
         let (stream, movie, keyframes) = match &*write.source.read() {
@@ -373,7 +379,7 @@ impl<'gc> TDisplayObject<'gc> for Video<'gc> {
     }
 
     fn construct_frame(&self, context: &mut UpdateContext<'_, 'gc, '_>) {
-        let vm_type = self.vm_type(context);
+        let vm_type = self.avm_type();
         if vm_type == AvmType::Avm2 && matches!(self.object2(), Avm2Value::Undefined) {
             let object: Avm2Object<'_> = Avm2StageObject::for_display_object(
                 context.gc_context,

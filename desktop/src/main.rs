@@ -216,7 +216,7 @@ impl App {
 
             (
                 format!("Ruffle - {}", filename),
-                LogicalSize::new(movie.width(), movie.height()).cast::<f64>(),
+                LogicalSize::new(movie.width().to_pixels(), movie.height().to_pixels()),
             )
         } else {
             ("Ruffle".into(), Self::DEFAULT_WINDOW_SIZE)
@@ -525,8 +525,8 @@ fn run_timedemo(opt: Opt) -> Result<(), Box<dyn std::error::Error>> {
         .input_path
         .as_ref()
         .ok_or("Input file necessary for timedemo")?;
-    let (movie, _) = load_movie_from_path(&path, &opt)?;
-    let movie_frames = Some(movie.header().num_frames);
+    let (movie, _) = load_movie_from_path(path, &opt)?;
+    let movie_frames = Some(movie.num_frames());
 
     let viewport_width = 1920;
     let viewport_height = 1080;

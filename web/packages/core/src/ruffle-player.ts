@@ -28,6 +28,7 @@ enum PanicError {
     Unknown,
     CSPConflict,
     FileProtocol,
+    InvalidWasm,
     JavascriptConfiguration,
     JavascriptConflict,
     WasmCors,
@@ -201,10 +202,6 @@ export class RufflePlayer extends HTMLElement {
         }
 
         this.unmuteOverlay = this.shadow.getElementById("unmute_overlay")!;
-        this.unmuteOverlay.addEventListener(
-            "click",
-            this.unmuteOverlayClicked.bind(this)
-        );
 
         this.contextMenuElement = this.shadow.getElementById("context-menu")!;
         this.addEventListener("contextmenu", this.showContextMenu.bind(this));
@@ -395,6 +392,11 @@ export class RufflePlayer extends HTMLElement {
                 } else if (message.includes("disallowed by embedder")) {
                     e.ruffleIndexError = PanicError.CSPConflict;
                 } else if (
+                    message.includes("webassembly.instantiate") &&
+                    e.name === "CompileError"
+                ) {
+                    e.ruffleIndexError = PanicError.InvalidWasm;
+                } else if (
                     !message.includes("magic") &&
                     (e.name === "CompileError" || e.name === "TypeError")
                 ) {
@@ -439,19 +441,17 @@ export class RufflePlayer extends HTMLElement {
             this.play();
 
             if (this.audioState() !== "running") {
-                this.unmuteOverlay.style.display = "block";
+                if (unmuteVisibility === UnmuteOverlay.Visible) {
+                    this.unmuteOverlay.style.display = "block";
+                }
 
-                // We need to mark each child as hidden or visible, as we want an overlay even if it's "hidden".
-                // We need to undo this later if the config changed back to visible, but we already hid them.
-                this.unmuteOverlay.childNodes.forEach((node) => {
-                    if ("style" in node) {
-                        const style = (<ElementCSSInlineStyle>node).style;
-                        style.visibility =
-                            unmuteVisibility == UnmuteOverlay.Visible
-                                ? ""
-                                : "hidden";
+                this.container.addEventListener(
+                    "click",
+                    this.unmuteOverlayClicked.bind(this),
+                    {
+                        once: true,
                     }
-                });
+                );
 
                 const audioContext = this.instance?.audio_context();
                 if (audioContext) {
@@ -1056,6 +1056,18 @@ export class RufflePlayer extends HTMLElement {
                 `;
                 errorFooter = `
                     <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#web">View Ruffle Wiki</a></li>
+                    <li><a href="#" id="panic-view-details">View Error Details</a></li>
+                `;
+                break;
+            case PanicError.InvalidWasm:
+                // Self hosted: Cannot load `.wasm` file - incorrect configuration or missing files
+                errorBody = `
+                    <p>Ruffle has encountered a major issue whilst trying to initialize.</p>
+                    <p>It seems like this page has missing or invalid files for running Ruffle.</p>
+                    <p>If you are the server administrator, please consult the Ruffle wiki for help.</p>
+                `;
+                errorFooter = `
+                    <li><a target="_top" href="https://github.com/ruffle-rs/ruffle/wiki/Using-Ruffle#addressing-a-compileerror">View Ruffle Wiki</a></li>
                     <li><a href="#" id="panic-view-details">View Error Details</a></li>
                 `;
                 break;

@@ -1,7 +1,6 @@
 #![allow(
     renamed_and_removed_lints,
     clippy::unknown_clippy_lints,
-    clippy::float_cmp,
     clippy::inconsistent_digit_grouping,
     clippy::unreadable_literal
 )]
@@ -25,10 +24,10 @@ use std::io::{self, Read};
 /// let data = std::fs::read("tests/swfs/DefineSprite.swf").unwrap();
 /// let stream = swf::decompress_swf(&data[..]).unwrap();
 /// let swf = swf::parse_swf(&stream).unwrap();
-/// println!("Number of frames: {}", swf.header.num_frames);
+/// println!("Number of frames: {}", swf.header.num_frames());
 /// ```
 pub fn parse_swf(swf_buf: &SwfBuf) -> Result<Swf<'_>> {
-    let mut reader = Reader::new(&swf_buf.data[..], swf_buf.header.version);
+    let mut reader = Reader::new(&swf_buf.data[..], swf_buf.header.version());
 
     Ok(Swf {
         header: swf_buf.header.clone(),
@@ -41,18 +40,22 @@ pub fn parse_swf(swf_buf: &SwfBuf) -> Result<Swf<'_>> {
 ///
 /// Returns an `Error` if this is not a valid SWF file.
 ///
+/// This will also parse the first two tags of the SWF file searching
+/// for the FileAttributes and SetBackgroundColor tags; this info is
+/// returned as an extended header.
+///
 /// # Example
 /// ```
 /// # std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
 /// let data = std::fs::read("tests/swfs/DefineSprite.swf").unwrap();
 /// let swf_stream = swf::decompress_swf(&data[..]).unwrap();
-/// println!("FPS: {}", swf_stream.header.frame_rate);
+/// println!("FPS: {}", swf_stream.header.frame_rate());
 /// ```
 pub fn decompress_swf<'a, R: Read + 'a>(mut input: R) -> Result<SwfBuf> {
     // Read SWF header.
     let compression = read_compression_type(&mut input)?;
     let version = input.read_u8()?;
-    let uncompressed_length = input.read_u32::<LittleEndian>()?;
+    let uncompressed_len = input.read_u32::<LittleEndian>()?;
 
     // Now the SWF switches to a compressed stream.
     let mut decompress_stream: Box<dyn Read> = match compression {
@@ -75,12 +78,12 @@ pub fn decompress_swf<'a, R: Read + 'a>(mut input: R) -> Result<SwfBuf> {
             }
             // Uncompressed length includes the 4-byte header and 4-byte uncompressed length itself,
             // subtract it here.
-            make_lzma_reader(input, uncompressed_length - 8)?
+            make_lzma_reader(input, uncompressed_len - 8)?
         }
     };
 
     // Decompress the entire SWF.
-    let mut data = Vec::with_capacity(uncompressed_length as usize);
+    let mut data = Vec::with_capacity(uncompressed_len as usize);
     if let Err(e) = decompress_stream.read_to_end(&mut data) {
         log::error!("Error decompressing SWF: {}", e);
     }
@@ -91,7 +94,7 @@ pub fn decompress_swf<'a, R: Read + 'a>(mut input: R) -> Result<SwfBuf> {
     // through the stream.
     // We'll still try to parse what we get if the full decompression fails.
     // (+ 8 for header size)
-    if data.len() as u64 + 8 != uncompressed_length as u64 {
+    if data.len() as u64 + 8 != uncompressed_len as u64 {
         log::warn!("SWF length doesn't match header, may be corrupt");
     }
 
@@ -102,13 +105,45 @@ pub fn decompress_swf<'a, R: Read + 'a>(mut input: R) -> Result<SwfBuf> {
     let header = Header {
         compression,
         version,
-        uncompressed_length,
         stage_size,
         frame_rate,
         num_frames,
     };
     let data = reader.get_ref().to_vec();
-    Ok(SwfBuf { header, data })
+
+    // Parse the first two tags, searching for the FileAttributes and SetBackgroundColor tags.
+    // This metadata is useful, so we want to return it along with the header.
+    // In SWF8+, FileAttributes should be the first tag in the SWF.
+    // FileAttributes anywhere else in the SWF are ignored.
+    let mut tag = reader.read_tag();
+    let file_attributes = if let Ok(Tag::FileAttributes(attributes)) = tag {
+        tag = reader.read_tag();
+        attributes
+    } else {
+        FileAttributes::default()
+    };
+
+    // In most SWFs, SetBackgroundColor will be the second or third tag after FileAttributes + Metadata.
+    // It's possible for the SetBackgroundColor tag to be missing or appear later in wacky SWFs, so let's
+    // return `None` in this case.
+    let mut background_color = None;
+    for _ in 0..2 {
+        if let Ok(Tag::SetBackgroundColor(color)) = tag {
+            background_color = Some(color);
+            break;
+        };
+        tag = reader.read_tag();
+    }
+
+    Ok(SwfBuf {
+        header: HeaderExt {
+            header,
+            file_attributes,
+            background_color,
+            uncompressed_len,
+        },
+        data,
+    })
 }
 
 #[cfg(feature = "flate2")]
@@ -230,8 +265,8 @@ impl<'a, 'b> BitReader<'a, 'b> {
     }
 
     #[inline]
-    fn read_fbits(&mut self, num_bits: u32) -> io::Result<f32> {
-        self.read_sbits(num_bits).map(|n| (n as f32) / 65536f32)
+    fn read_fbits(&mut self, num_bits: u32) -> io::Result<Fixed16> {
+        self.read_sbits(num_bits).map(Fixed16::from_bits)
     }
 
     #[inline]
@@ -254,7 +289,7 @@ impl<'a> ReadSwfExt<'a> for Reader<'a> {
 
     #[inline(always)]
     fn as_slice(&self) -> &'a [u8] {
-        &self.input
+        self.input
     }
 }
 
@@ -304,7 +339,7 @@ impl<'a> Reader<'a> {
     /// # std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
     /// let data = std::fs::read("tests/swfs/DefineSprite.swf").unwrap();
     /// let mut swf_buf = swf::decompress_swf(&data[..]).unwrap();
-    /// let mut reader = swf::read::Reader::new(&swf_buf.data[..], swf_buf.header.version);
+    /// let mut reader = swf::read::Reader::new(&swf_buf.data[..], swf_buf.header.version());
     /// while let Ok(tag) = reader.read_tag() {
     ///     println!("Tag: {:?}", tag);
     /// }
@@ -657,7 +692,7 @@ impl<'a> Reader<'a> {
 
     fn read_matrix(&mut self) -> Result<Matrix> {
         let mut bits = self.bits();
-        let mut m = Matrix::identity();
+        let mut m = Matrix::IDENTITY;
         // Scale
         if bits.read_bit()? {
             let num_bits = bits.read_ubits(5)?;
@@ -678,15 +713,8 @@ impl<'a> Reader<'a> {
     }
 
     fn read_language(&mut self) -> Result<Language> {
-        Ok(match self.read_u8()? {
-            0 => Language::Unknown,
-            1 => Language::Latin,
-            2 => Language::Japanese,
-            3 => Language::Korean,
-            4 => Language::SimplifiedChinese,
-            5 => Language::TraditionalChinese,
-            _ => return Err(Error::invalid_data("Invalid language code")),
-        })
+        Language::from_u8(self.read_u8()?)
+            .ok_or_else(|| Error::invalid_data("Invalid language code"))
     }
 
     fn read_tag_list(&mut self) -> Result<Vec<Tag<'a>>> {
@@ -890,12 +918,8 @@ impl<'a> Reader<'a> {
         Ok(CsmTextSettings {
             id,
             use_advanced_rendering: flags & 0b01000000 != 0,
-            grid_fit: match flags & 0b11_000 {
-                0b00_000 => TextGridFit::None,
-                0b01_000 => TextGridFit::Pixel,
-                0b10_000 => TextGridFit::SubPixel,
-                _ => return Err(Error::invalid_data("Invalid text grid fitting")),
-            },
+            grid_fit: TextGridFit::from_u8((flags >> 3) & 0b11)
+                .ok_or_else(|| Error::invalid_data("Invalid text grid fitting"))?,
             thickness,
             sharpness,
         })
@@ -1135,12 +1159,8 @@ impl<'a> Reader<'a> {
 
     fn read_define_font_align_zones(&mut self) -> Result<Tag<'a>> {
         let id = self.read_character_id()?;
-        let thickness = match self.read_u8()? {
-            0b00_000000 => FontThickness::Thin,
-            0b01_000000 => FontThickness::Medium,
-            0b10_000000 => FontThickness::Thick,
-            _ => return Err(Error::invalid_data("Invalid font thickness type.")),
-        };
+        let thickness = FontThickness::from_u8(self.read_u8()? >> 6)
+            .ok_or_else(|| Error::invalid_data("Invalid font thickness type."))?;
         let mut zones = vec![];
         while let Ok(zone) = self.read_font_align_zone() {
             zones.push(zone);
@@ -1327,24 +1347,16 @@ impl<'a> Reader<'a> {
             // MorphLineStyle2 in DefineMorphShape2.
             let flags0 = self.read_u8()?;
             let flags1 = self.read_u8()?;
-            let start_cap = match flags0 >> 6 {
-                0 => LineCapStyle::Round,
-                1 => LineCapStyle::None,
-                2 => LineCapStyle::Square,
-                _ => return Err(Error::invalid_data("Invalid line cap type.")),
-            };
+            let start_cap = LineCapStyle::from_u8(flags0 >> 6)
+                .ok_or_else(|| Error::invalid_data("Invalid line cap type."))?;
             let join_style_id = (flags0 >> 4) & 0b11;
             let has_fill = (flags0 & 0b1000) != 0;
             let allow_scale_x = (flags0 & 0b100) == 0;
             let allow_scale_y = (flags0 & 0b10) == 0;
             let is_pixel_hinted = (flags0 & 0b1) != 0;
             let allow_close = (flags1 & 0b100) == 0;
-            let end_cap = match flags1 & 0b11 {
-                0 => LineCapStyle::Round,
-                1 => LineCapStyle::None,
-                2 => LineCapStyle::Square,
-                _ => return Err(Error::invalid_data("Invalid line cap type.")),
-            };
+            let end_cap = LineCapStyle::from_u8(flags1 & 0b11)
+                .ok_or_else(|| Error::invalid_data("Invalid line cap type."))?;
             let join_style = match join_style_id {
                 0 => LineJoinStyle::Round,
                 1 => LineJoinStyle::Bevel,
@@ -1662,24 +1674,16 @@ impl<'a> Reader<'a> {
             let width = Twips::new(self.read_u16()?);
             let flags0 = self.read_u8()?;
             let flags1 = self.read_u8()?;
-            let start_cap = match flags0 >> 6 {
-                0 => LineCapStyle::Round,
-                1 => LineCapStyle::None,
-                2 => LineCapStyle::Square,
-                _ => return Err(Error::invalid_data("Invalid line cap type.")),
-            };
+            let start_cap = LineCapStyle::from_u8(flags0 >> 6)
+                .ok_or_else(|| Error::invalid_data("Invalid line cap type."))?;
             let join_style_id = (flags0 >> 4) & 0b11;
             let has_fill = (flags0 & 0b1000) != 0;
             let allow_scale_x = (flags0 & 0b100) == 0;
             let allow_scale_y = (flags0 & 0b10) == 0;
             let is_pixel_hinted = (flags0 & 0b1) != 0;
             let allow_close = (flags1 & 0b100) == 0;
-            let end_cap = match flags1 & 0b11 {
-                0 => LineCapStyle::Round,
-                1 => LineCapStyle::None,
-                2 => LineCapStyle::Square,
-                _ => return Err(Error::invalid_data("Invalid line cap type.")),
-            };
+            let end_cap = LineCapStyle::from_u8(flags1 & 0b11)
+                .ok_or_else(|| Error::invalid_data("Invalid line cap type."))?;
             let join_style = match join_style_id {
                 0 => LineJoinStyle::Round,
                 1 => LineJoinStyle::Bevel,
@@ -1740,17 +1744,10 @@ impl<'a> Reader<'a> {
 
     fn read_gradient_flags(&mut self) -> Result<(usize, GradientSpread, GradientInterpolation)> {
         let flags = self.read_u8()?;
-        let spread = match flags & 0b1100_0000 {
-            0b0000_0000 => GradientSpread::Pad,
-            0b0100_0000 => GradientSpread::Reflect,
-            0b1000_0000 => GradientSpread::Repeat,
-            _ => return Err(Error::invalid_data("Invalid gradient spread mode")),
-        };
-        let interpolation = match flags & 0b11_0000 {
-            0b00_0000 => GradientInterpolation::Rgb,
-            0b01_0000 => GradientInterpolation::LinearRgb,
-            _ => return Err(Error::invalid_data("Invalid gradient interpolation mode")),
-        };
+        let spread = GradientSpread::from_u8((flags >> 6) & 0b11)
+            .ok_or_else(|| Error::invalid_data("Invalid gradient spread mode"))?;
+        let interpolation = GradientInterpolation::from_u8((flags >> 4) & 0b11)
+            .ok_or_else(|| Error::invalid_data("Invalid gradient interpolation mode"))?;
         let num_records = usize::from(flags & 0b1111);
         Ok((num_records, spread, interpolation))
     }
@@ -1848,13 +1845,7 @@ impl<'a> Reader<'a> {
 
     pub fn read_file_attributes(&mut self) -> Result<FileAttributes> {
         let flags = self.read_u32()?;
-        Ok(FileAttributes {
-            use_direct_blit: (flags & 0b01000000) != 0,
-            use_gpu: (flags & 0b00100000) != 0,
-            has_metadata: (flags & 0b00010000) != 0,
-            is_action_script_3: (flags & 0b00001000) != 0,
-            use_network_sandbox: (flags & 0b00000001) != 0,
-        })
+        Ok(FileAttributes::from_bits_truncate(flags as u8))
     }
 
     pub fn read_export_assets(&mut self) -> Result<ExportAssets<'a>> {
@@ -2037,23 +2028,7 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_blend_mode(&mut self) -> Result<BlendMode> {
-        Ok(match self.read_u8()? {
-            0 | 1 => BlendMode::Normal,
-            2 => BlendMode::Layer,
-            3 => BlendMode::Multiply,
-            4 => BlendMode::Screen,
-            5 => BlendMode::Lighten,
-            6 => BlendMode::Darken,
-            7 => BlendMode::Difference,
-            8 => BlendMode::Add,
-            9 => BlendMode::Subtract,
-            10 => BlendMode::Invert,
-            11 => BlendMode::Alpha,
-            12 => BlendMode::Erase,
-            13 => BlendMode::Overlay,
-            14 => BlendMode::HardLight,
-            _ => return Err(Error::invalid_data("Invalid blend mode")),
-        })
+        BlendMode::from_u8(self.read_u8()?).ok_or_else(|| Error::invalid_data("Invalid blend mode"))
     }
 
     fn read_clip_actions(&mut self) -> Result<Vec<ClipAction<'a>>> {
@@ -2258,7 +2233,7 @@ impl<'a> Reader<'a> {
                 }))
             }
             6 => {
-                let mut matrix = [0f64; 20];
+                let mut matrix = [Fixed16::ZERO; 20];
                 for m in &mut matrix {
                     *m = self.read_fixed16()?;
                 }
@@ -2303,17 +2278,8 @@ impl<'a> Reader<'a> {
 
     pub fn read_sound_format(&mut self) -> Result<SoundFormat> {
         let flags = self.read_u8()?;
-        let compression = match flags >> 4 {
-            0 => AudioCompression::UncompressedUnknownEndian,
-            1 => AudioCompression::Adpcm,
-            2 => AudioCompression::Mp3,
-            3 => AudioCompression::Uncompressed,
-            4 => AudioCompression::Nellymoser16Khz,
-            5 => AudioCompression::Nellymoser8Khz,
-            6 => AudioCompression::Nellymoser,
-            11 => AudioCompression::Speex,
-            _ => return Err(Error::invalid_data("Invalid audio format.")),
-        };
+        let compression = AudioCompression::from_u8(flags >> 4)
+            .ok_or_else(|| Error::invalid_data("Invalid audio format."))?;
         let sample_rate = match (flags & 0b11_00) >> 2 {
             0 => 5512,
             1 => 11025,
@@ -2333,12 +2299,7 @@ impl<'a> Reader<'a> {
 
     pub fn read_sound_info(&mut self) -> Result<SoundInfo> {
         let flags = self.read_u8()?;
-        let event = match (flags >> 4) & 0b11 {
-            0b10 | 0b11 => SoundEvent::Stop,
-            0b00 => SoundEvent::Event,
-            0b01 => SoundEvent::Start,
-            _ => unreachable!(),
-        };
+        let event = SoundEvent::from_u8((flags >> 4) & 0b11).unwrap();
         let in_sample = if (flags & 0b1) != 0 {
             Some(self.read_u32()?)
         } else {
@@ -2499,13 +2460,8 @@ impl<'a> Reader<'a> {
         };
         let layout = if flags2 & 0b100000 != 0 {
             Some(TextLayout {
-                align: match self.read_u8()? {
-                    0 => TextAlign::Left,
-                    1 => TextAlign::Right,
-                    2 => TextAlign::Center,
-                    3 => TextAlign::Justify,
-                    _ => return Err(Error::invalid_data("Invalid edit text alignment")),
-                },
+                align: TextAlign::from_u8(self.read_u8()?)
+                    .ok_or_else(|| Error::invalid_data("Invalid edit text alignment"))?,
                 left_margin: Twips::new(self.read_u16()?),
                 right_margin: Twips::new(self.read_u16()?),
                 indent: Twips::new(self.read_u16()?),
@@ -2551,14 +2507,8 @@ impl<'a> Reader<'a> {
         let height = self.read_u16()?;
         let flags = self.read_u8()?;
         // TODO(Herschel): Check SWF version.
-        let codec = match self.read_u8()? {
-            2 => VideoCodec::H263,
-            3 => VideoCodec::ScreenVideo,
-            4 => VideoCodec::Vp6,
-            5 => VideoCodec::Vp6WithAlpha,
-            6 => VideoCodec::ScreenVideoV2,
-            _ => return Err(Error::invalid_data("Invalid video codec.")),
-        };
+        let codec = VideoCodec::from_u8(self.read_u8()?)
+            .ok_or_else(|| Error::invalid_data("Invalid video codec."))?;
         Ok(Tag::DefineVideoStream(DefineVideoStream {
             id,
             num_frames,
@@ -2566,15 +2516,8 @@ impl<'a> Reader<'a> {
             height,
             is_smoothed: flags & 0b1 != 0,
             codec,
-            deblocking: match flags & 0b100_0 {
-                0b000_0 => VideoDeblocking::UseVideoPacketValue,
-                0b001_0 => VideoDeblocking::None,
-                0b010_0 => VideoDeblocking::Level1,
-                0b011_0 => VideoDeblocking::Level2,
-                0b100_0 => VideoDeblocking::Level3,
-                0b101_0 => VideoDeblocking::Level4,
-                _ => return Err(Error::invalid_data("Invalid video deblocking value.")),
-            },
+            deblocking: VideoDeblocking::from_u8((flags >> 1) & 0b111)
+                .ok_or_else(|| Error::invalid_data("Invalid video deblocking value."))?,
         }))
     }
 
@@ -2595,7 +2538,7 @@ impl<'a> Reader<'a> {
         let deblocking = if version >= 4 {
             self.read_fixed8()?
         } else {
-            0.0
+            Fixed8::ZERO
         };
         let data = self.read_slice(data_size)?;
         let alpha_data = self.read_slice_to_end();
@@ -2610,18 +2553,16 @@ impl<'a> Reader<'a> {
 
     pub fn read_define_bits_lossless(&mut self, version: u8) -> Result<DefineBitsLossless<'a>> {
         let id = self.read_character_id()?;
-        let format = match self.read_u8()? {
-            3 => BitmapFormat::ColorMap8,
+        let format = self.read_u8()?;
+        let width = self.read_u16()?;
+        let height = self.read_u16()?;
+        let format = match format {
+            3 => BitmapFormat::ColorMap8 {
+                num_colors: self.read_u8()?,
+            },
             4 if version == 1 => BitmapFormat::Rgb15,
             5 => BitmapFormat::Rgb32,
             _ => return Err(Error::invalid_data("Invalid bitmap format.")),
-        };
-        let width = self.read_u16()?;
-        let height = self.read_u16()?;
-        let num_colors = if format == BitmapFormat::ColorMap8 {
-            self.read_u8()?
-        } else {
-            0
         };
         let data = self.read_slice_to_end();
         Ok(DefineBitsLossless {
@@ -2630,7 +2571,6 @@ impl<'a> Reader<'a> {
             format,
             width,
             height,
-            num_colors,
             data,
         })
     }
@@ -2704,7 +2644,7 @@ pub mod tests {
         let mut tag_header_length;
         loop {
             let (swf_tag_code, length) = {
-                let mut tag_reader = Reader::new(&data[pos..], swf_buf.header.version);
+                let mut tag_reader = Reader::new(&data[pos..], swf_buf.header.version());
                 let ret = tag_reader.read_tag_code_and_length().unwrap();
                 tag_header_length =
                     tag_reader.get_ref().as_ptr() as usize - (pos + data.as_ptr() as usize);
@@ -2752,16 +2692,16 @@ pub mod tests {
         assert_eq!(
             read_from_file("tests/swfs/uncompressed.swf")
                 .header
-                .compression,
+                .compression(),
             Compression::None
         );
         assert_eq!(
-            read_from_file("tests/swfs/zlib.swf").header.compression,
+            read_from_file("tests/swfs/zlib.swf").header.compression(),
             Compression::Zlib
         );
         if cfg!(feature = "lzma") {
             assert_eq!(
-                read_from_file("tests/swfs/lzma.swf").header.compression,
+                read_from_file("tests/swfs/lzma.swf").header.compression(),
                 Compression::Lzma
             );
         }
@@ -2795,7 +2735,7 @@ pub mod tests {
     #[test]
     fn read_bit() {
         let buf: &[u8] = &[0b01010101, 0b00100101];
-        let mut reader = Reader::new(&buf, 1);
+        let mut reader = Reader::new(buf, 1);
         let mut bits = reader.bits();
         assert_eq!(
             (0..16)
@@ -2836,20 +2776,23 @@ pub mod tests {
 
     #[test]
     fn read_fbits() {
-        assert_eq!(Reader::new(&[0][..], 1).bits().read_fbits(5).unwrap(), 0f32);
+        assert_eq!(
+            Reader::new(&[0][..], 1).bits().read_fbits(5).unwrap(),
+            Fixed16::ZERO
+        );
         assert_eq!(
             Reader::new(&[0b01000000, 0b00000000, 0b0_0000000][..], 1)
                 .bits()
                 .read_fbits(17)
                 .unwrap(),
-            0.5f32
+            Fixed16::from_f32(0.5)
         );
         assert_eq!(
             Reader::new(&[0b10000000, 0b00000000][..], 1)
                 .bits()
                 .read_fbits(16)
                 .unwrap(),
-            -0.5f32
+            Fixed16::from_f32(-0.5)
         );
     }
 
@@ -2860,10 +2803,10 @@ pub mod tests {
             0b11101011,
         ];
         let mut reader = Reader::new(&buf[..], 1);
-        assert_eq!(reader.read_fixed8().unwrap(), 0f32);
-        assert_eq!(reader.read_fixed8().unwrap(), 1f32);
-        assert_eq!(reader.read_fixed8().unwrap(), 6.5f32);
-        assert_eq!(reader.read_fixed8().unwrap(), -20.75f32);
+        assert_eq!(reader.read_fixed8().unwrap(), Fixed8::from_f32(0.0));
+        assert_eq!(reader.read_fixed8().unwrap(), Fixed8::from_f32(1.0));
+        assert_eq!(reader.read_fixed8().unwrap(), Fixed8::from_f32(6.5));
+        assert_eq!(reader.read_fixed8().unwrap(), Fixed8::from_f32(-20.75));
     }
 
     #[test]
@@ -2933,10 +2876,10 @@ pub mod tests {
                 Matrix {
                     tx: Twips::from_pixels(0.0),
                     ty: Twips::from_pixels(0.0),
-                    a: 1f32,
-                    d: 1f32,
-                    b: 0f32,
-                    c: 0f32,
+                    a: Fixed16::ONE,
+                    b: Fixed16::ZERO,
+                    c: Fixed16::ZERO,
+                    d: Fixed16::ONE,
                 }
             );
         }
@@ -3024,7 +2967,7 @@ pub mod tests {
 
         let fill_style = FillStyle::Bitmap {
             id: 20,
-            matrix: Matrix::identity(),
+            matrix: Matrix::IDENTITY,
             is_smoothed: false,
             is_repeating: true,
         };
@@ -3033,7 +2976,7 @@ pub mod tests {
             fill_style
         );
 
-        let mut matrix = Matrix::identity();
+        let mut matrix = Matrix::IDENTITY;
         matrix.tx = Twips::from_pixels(1.0);
         let fill_style = FillStyle::Bitmap {
             id: 33,

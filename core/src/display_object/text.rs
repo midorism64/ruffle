@@ -36,7 +36,7 @@ impl<'gc> Text<'gc> {
                         swf,
                         id: tag.id,
                         bounds: tag.bounds.clone().into(),
-                        text_transform: tag.matrix,
+                        text_transform: tag.matrix.into(),
                         text_blocks: tag.records.clone(),
                     },
                 ),
@@ -65,6 +65,18 @@ impl<'gc> TDisplayObject<'gc> for Text<'gc> {
         Some(self.0.read().static_data.swf.clone())
     }
 
+    fn replace_with(&self, context: &mut UpdateContext<'_, 'gc, '_>, id: CharacterId) {
+        if let Some(new_text) = context
+            .library
+            .library_for_movie_mut(self.movie().unwrap())
+            .get_text(id)
+        {
+            self.0.write(context.gc_context).static_data = new_text.0.read().static_data;
+        } else {
+            log::warn!("PlaceObject: expected text at character ID {}", id);
+        }
+    }
+
     fn run_frame(&self, _context: &mut UpdateContext) {
         // Noop
     }
@@ -83,7 +95,7 @@ impl<'gc> TDisplayObject<'gc> for Text<'gc> {
             a: 0,
         };
         let mut font_id = 0;
-        let mut height = Twips::zero();
+        let mut height = Twips::ZERO;
         let mut transform: Transform = Default::default();
         for block in &tf.static_data.text_blocks {
             if let Some(x) = block.x_offset {
@@ -144,7 +156,7 @@ impl<'gc> TDisplayObject<'gc> for Text<'gc> {
             point = text_matrix * local_matrix * point;
 
             let mut font_id = 0;
-            let mut height = Twips::zero();
+            let mut height = Twips::ZERO;
             let mut glyph_matrix = Matrix::default();
             for block in &tf.static_data.text_blocks {
                 if let Some(x) = block.x_offset {

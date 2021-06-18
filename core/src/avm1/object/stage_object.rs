@@ -3,7 +3,6 @@
 use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::Executable;
-use crate::avm1::object::search_prototype;
 use crate::avm1::property::Attribute;
 use crate::avm1::property_map::PropertyMap;
 use crate::avm1::{AvmString, Object, ObjectPtr, ScriptObject, TDisplayObject, TObject, Value};
@@ -162,55 +161,46 @@ impl fmt::Debug for StageObject<'_> {
 }
 
 impl<'gc> TObject<'gc> for StageObject<'gc> {
-    fn get(
+    fn get_local(
         &self,
         name: &str,
         activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<Value<'gc>, Error<'gc>> {
+        this: Object<'gc>,
+    ) -> Option<Result<Value<'gc>, Error<'gc>>> {
         let obj = self.0.read();
         let props = activation.context.avm1.display_properties;
         let case_sensitive = activation.is_case_sensitive();
         // Property search order for DisplayObjects:
         if self.has_own_property(activation, name) {
             // 1) Actual properties on the underlying object
-            self.get_local(name, activation, (*self).into())
+            self.0.read().base.get_local(name, activation, this)
         } else if let Some(level) =
             Self::get_level_by_path(name, &mut activation.context, case_sensitive)
         {
             // 2) _levelN
-            Ok(level)
+            Some(Ok(level))
         } else if let Some(child) = obj
             .display_object
             .as_container()
             .and_then(|o| o.child_by_name(name, case_sensitive))
         {
             // 3) Child display objects with the given instance name
-            Ok(child.object())
-        } else if let Some(property) = props.read().get_by_name(&name) {
+            Some(Ok(child.object()))
+        } else if let Some(property) = props.read().get_by_name(name) {
             // 4) Display object properties such as _x, _y
-            let val = property.get(activation, obj.display_object)?;
-            Ok(val)
+            Some(property.get(activation, obj.display_object))
         } else {
-            // 5) Prototype
-            Ok(search_prototype(self.proto(), name, activation, (*self).into())?.0)
+            None
         }
-        // 6) TODO: __resolve?
     }
 
-    fn get_local(
-        &self,
-        name: &str,
-        activation: &mut Activation<'_, 'gc, '_>,
-        this: Object<'gc>,
-    ) -> Result<Value<'gc>, Error<'gc>> {
-        self.0.read().base.get_local(name, activation, this)
-    }
-
-    fn set(
+    fn set_local(
         &self,
         name: &str,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
+        this: Object<'gc>,
+        base_proto: Option<Object<'gc>>,
     ) -> Result<(), Error<'gc>> {
         let obj = self.0.read();
         let props = activation.context.avm1.display_properties;
@@ -234,26 +224,14 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
 
         if base.has_own_property(activation, name) {
             // 1) Actual properties on the underlying object
-            base.internal_set(
-                name,
-                value,
-                activation,
-                (*self).into(),
-                Some((*self).into()),
-            )
-        } else if let Some(property) = props.read().get_by_name(&name) {
+            base.set_local(name, value, activation, this, base_proto)
+        } else if let Some(property) = props.read().get_by_name(name) {
             // 2) Display object properties such as _x, _y
             property.set(activation, display_object, value)?;
             Ok(())
         } else {
             // 3) TODO: Prototype
-            base.internal_set(
-                name,
-                value,
-                activation,
-                (*self).into(),
-                Some((*self).into()),
-            )
+            base.set_local(name, value, activation, this, base_proto)
         }
     }
     fn call(
@@ -345,7 +323,6 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
     fn add_property_with_case(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
         name: &str,
         get: Object<'gc>,
         set: Option<Object<'gc>>,
@@ -354,13 +331,12 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         self.0
             .read()
             .base
-            .add_property_with_case(activation, gc_context, name, get, set, attributes)
+            .add_property_with_case(activation, name, get, set, attributes)
     }
 
     fn set_watcher(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
         name: Cow<str>,
         callback: Object<'gc>,
         user_data: Value<'gc>,
@@ -368,19 +344,11 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         self.0
             .read()
             .base
-            .set_watcher(activation, gc_context, name, callback, user_data);
+            .set_watcher(activation, name, callback, user_data);
     }
 
-    fn remove_watcher(
-        &self,
-        activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
-        name: Cow<str>,
-    ) -> bool {
-        self.0
-            .read()
-            .base
-            .remove_watcher(activation, gc_context, name)
+    fn remove_watcher(&self, activation: &mut Activation<'_, 'gc, '_>, name: Cow<str>) -> bool {
+        self.0.read().base.remove_watcher(activation, name)
     }
 
     fn has_property(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool {
@@ -394,7 +362,7 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
             .avm1
             .display_properties
             .read()
-            .get_by_name(&name)
+            .get_by_name(name)
             .is_some()
         {
             return true;
@@ -438,7 +406,8 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
 
         if let Some(ctr) = obj.display_object.as_container() {
             keys.extend(
-                ctr.iter_execution_list()
+                ctr.iter_render_list()
+                    .rev()
                     .map(|child| child.name().to_string()),
             );
         }
@@ -446,36 +415,37 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
         keys
     }
 
-    fn length(&self) -> usize {
-        self.0.read().base.length()
+    fn length(&self, activation: &mut Activation<'_, 'gc, '_>) -> Result<i32, Error<'gc>> {
+        self.0.read().base.length(activation)
     }
 
-    fn set_length(&self, gc_context: MutationContext<'gc, '_>, new_length: usize) {
-        self.0.read().base.set_length(gc_context, new_length)
-    }
-
-    fn array(&self) -> Vec<Value<'gc>> {
-        self.0.read().base.array()
-    }
-
-    fn array_element(&self, index: usize) -> Value<'gc> {
-        self.0.read().base.array_element(index)
-    }
-
-    fn set_array_element(
+    fn set_length(
         &self,
-        index: usize,
-        value: Value<'gc>,
-        gc_context: MutationContext<'gc, '_>,
-    ) -> usize {
-        self.0
-            .read()
-            .base
-            .set_array_element(index, value, gc_context)
+        activation: &mut Activation<'_, 'gc, '_>,
+        length: i32,
+    ) -> Result<(), Error<'gc>> {
+        self.0.read().base.set_length(activation, length)
     }
 
-    fn delete_array_element(&self, index: usize, gc_context: MutationContext<'gc, '_>) {
-        self.0.read().base.delete_array_element(index, gc_context)
+    fn has_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool {
+        self.0.read().base.has_element(activation, index)
+    }
+
+    fn get_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> Value<'gc> {
+        self.0.read().base.get_element(activation, index)
+    }
+
+    fn set_element(
+        &self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        index: i32,
+        value: Value<'gc>,
+    ) -> Result<(), Error<'gc>> {
+        self.0.read().base.set_element(activation, index, value)
+    }
+
+    fn delete_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool {
+        self.0.read().base.delete_element(activation, index)
     }
 
     fn interfaces(&self) -> Vec<Object<'gc>> {
@@ -487,10 +457,6 @@ impl<'gc> TObject<'gc> for StageObject<'gc> {
             .write(gc_context)
             .base
             .set_interfaces(gc_context, iface_list)
-    }
-
-    fn as_string(&self) -> Cow<str> {
-        Cow::Owned(self.0.read().display_object.path())
     }
 
     fn type_of(&self) -> &'static str {
@@ -605,7 +571,7 @@ impl<'gc> DisplayPropertyMap<'gc> {
     pub fn get_by_name(&self, name: &str) -> Option<&DisplayProperty<'gc>> {
         // Display object properties are case insensitive, regardless of SWF version!?
         // TODO: Another string alloc; optimize this eventually.
-        self.0.get(&name, false)
+        self.0.get(name, false)
     }
 
     /// Gets a property slot by SWF4 index.
@@ -862,10 +828,15 @@ fn set_name<'gc>(
 
 fn drop_target<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    _this: DisplayObject<'gc>,
+    this: DisplayObject<'gc>,
 ) -> Result<Value<'gc>, Error<'gc>> {
-    avm_warn!(activation, "Unimplemented property _droptarget");
-    Ok("".into())
+    Ok(this
+        .as_movie_clip()
+        .and_then(|mc| mc.drop_target())
+        .map(|drop_target| {
+            AvmString::new(activation.context.gc_context, drop_target.slash_path()).into()
+        })
+        .unwrap_or_else(|| "".into()))
 }
 
 fn url<'gc>(
@@ -884,16 +855,36 @@ fn high_quality<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _this: DisplayObject<'gc>,
 ) -> Result<Value<'gc>, Error<'gc>> {
-    avm_warn!(activation, "Unimplemented property _highquality");
-    Ok(1.into())
+    use crate::display_object::StageQuality;
+    let quality = match activation.context.stage.quality() {
+        StageQuality::Best => 2,
+        StageQuality::High => 1,
+        _ => 0,
+    };
+    Ok(quality.into())
 }
 
 fn set_high_quality<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _this: DisplayObject<'gc>,
-    _val: Value<'gc>,
+    val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    avm_warn!(activation, "Unimplemented property _highquality");
+    use crate::display_object::StageQuality;
+    let val = val.coerce_to_f64(activation)?;
+    if !val.is_nan() {
+        // 0 -> Low, 1 -> High, 2 -> Best, but with some odd rules for non-integers.
+        let quality = if val > 1.5 {
+            StageQuality::Best
+        } else if val == 0.0 {
+            StageQuality::Low
+        } else {
+            StageQuality::High
+        };
+        activation
+            .context
+            .stage
+            .set_quality(activation.context.gc_context, quality);
+    }
     Ok(())
 }
 
@@ -935,16 +926,21 @@ fn quality<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _this: DisplayObject<'gc>,
 ) -> Result<Value<'gc>, Error<'gc>> {
-    avm_warn!(activation, "Unimplemented property _quality");
-    Ok("HIGH".into())
+    let quality = activation.context.stage.quality().into_avm_str();
+    Ok(AvmString::new(activation.context.gc_context, quality).into())
 }
 
 fn set_quality<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
     _this: DisplayObject<'gc>,
-    _val: Value<'gc>,
+    val: Value<'gc>,
 ) -> Result<(), Error<'gc>> {
-    avm_warn!(activation, "Unimplemented property _quality");
+    if let Ok(quality) = val.coerce_to_string(activation)?.parse() {
+        activation
+            .context
+            .stage
+            .set_quality(activation.context.gc_context, quality);
+    }
     Ok(())
 }
 

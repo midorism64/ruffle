@@ -1,7 +1,7 @@
 //! Object trait to expose objects to AVM
 
 use crate::avm1::error::Error;
-use crate::avm1::function::{Executable, FunctionObject};
+use crate::avm1::function::{Executable, ExecutionReason, FunctionObject};
 use crate::avm1::object::shared_object::SharedObject;
 use crate::avm1::object::super_object::SuperObject;
 use crate::avm1::object::value_object::ValueObject;
@@ -60,6 +60,7 @@ pub mod xml_object;
 /// Represents an object that can be directly interacted with by the AVM
 /// runtime.
 #[enum_trait_object(
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, Collect, Debug, Copy)]
     #[collect(no_drop)]
     pub enum Object<'gc> {
@@ -102,7 +103,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         name: &str,
         activation: &mut Activation<'_, 'gc, '_>,
         this: Object<'gc>,
-    ) -> Result<Value<'gc>, Error<'gc>>;
+    ) -> Option<Result<Value<'gc>, Error<'gc>>>;
 
     /// Retrieve a named property from the object, or its prototype.
     fn get(
@@ -110,12 +111,22 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         name: &str,
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Value<'gc>, Error<'gc>> {
-        if self.has_own_property(activation, name) {
-            self.get_local(name, activation, (*self).into())
-        } else {
-            Ok(search_prototype(self.proto(), name, activation, (*self).into())?.0)
+        if name == "__proto__" {
+            return Ok(self.proto());
         }
+
+        let this = (*self).into();
+        Ok(search_prototype(Value::Object(this), name, activation, this)?.0)
     }
+
+    fn set_local(
+        &self,
+        name: &str,
+        value: Value<'gc>,
+        activation: &mut Activation<'_, 'gc, '_>,
+        this: Object<'gc>,
+        base_proto: Option<Object<'gc>>,
+    ) -> Result<(), Error<'gc>>;
 
     /// Set a named property on this object, or its prototype.
     fn set(
@@ -123,7 +134,61 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         name: &str,
         value: Value<'gc>,
         activation: &mut Activation<'_, 'gc, '_>,
-    ) -> Result<(), Error<'gc>>;
+    ) -> Result<(), Error<'gc>> {
+        if name.is_empty() {
+            return Ok(());
+        }
+
+        if name == "__proto__" {
+            self.set_proto(activation.context.gc_context, value);
+            return Ok(());
+        }
+
+        if let Ok(index) = name.parse::<i32>() {
+            return self.set_element(activation, index, value.to_owned());
+        }
+
+        if name == "length" {
+            let length = value
+                .coerce_to_f64(activation)
+                .map(|v| v.abs() as i32)
+                .unwrap_or(0);
+            if length > 0 {
+                self.set_length(activation, length)?;
+            } else {
+                self.set_length(activation, 0)?;
+            }
+        }
+
+        let this = (*self).into();
+        if !self.has_own_property(activation, name) {
+            // Before actually inserting a new property, we need to crawl the
+            // prototype chain for virtual setters.
+            let mut proto = Value::Object(this);
+            while let Value::Object(this_proto) = proto {
+                if this_proto.has_own_virtual(activation, name) {
+                    if let Some(setter) = this_proto.call_setter(name, value, activation) {
+                        if let Some(exec) = setter.as_executable() {
+                            let _ = exec.exec(
+                                "[Setter]",
+                                activation,
+                                this,
+                                Some(this_proto),
+                                &[value],
+                                ExecutionReason::Special,
+                                setter,
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+
+                proto = this_proto.proto();
+            }
+        }
+
+        self.set_local(name, value, activation, this, Some(this))
+    }
 
     /// Call the underlying object.
     ///
@@ -172,18 +237,14 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         args: &[Value<'gc>],
         activation: &mut Activation<'_, 'gc, '_>,
     ) -> Result<Value<'gc>, Error<'gc>> {
-        let (method, base_proto) = search_prototype(
-            Value::Object((*self).into()),
-            name,
-            activation,
-            (*self).into(),
-        )?;
+        let this = (*self).into();
+        let (method, base_proto) = search_prototype(Value::Object(this), name, activation, this)?;
 
         if method.is_primitive() {
             avm_warn!(activation, "Object method {} is not callable", name);
         }
 
-        method.call(name, activation, (*self).into(), base_proto, args)
+        method.call(name, activation, this, base_proto, args)
     }
 
     /// Call a setter defined in this object.
@@ -300,7 +361,6 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     fn add_property_with_case(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
         name: &str,
         get: Object<'gc>,
         set: Option<Object<'gc>>,
@@ -313,7 +373,6 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     fn set_watcher(
         &self,
         activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
         name: Cow<str>,
         callback: Object<'gc>,
         user_data: Value<'gc>,
@@ -323,12 +382,7 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
     ///
     /// The return value will indicate if there was a watcher present before this method was
     /// called.
-    fn remove_watcher(
-        &self,
-        activation: &mut Activation<'_, 'gc, '_>,
-        gc_context: MutationContext<'gc, '_>,
-        name: Cow<str>,
-    ) -> bool;
+    fn remove_watcher(&self, activation: &mut Activation<'_, 'gc, '_>, name: Cow<str>) -> bool;
 
     /// Checks if the object has a given named property.
     fn has_property(&self, activation: &mut Activation<'_, 'gc, '_>, name: &str) -> bool;
@@ -346,9 +400,6 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
 
     /// Enumerate the object.
     fn get_keys(&self, activation: &mut Activation<'_, 'gc, '_>) -> Vec<String>;
-
-    /// Coerce the object into a string.
-    fn as_string(&self) -> Cow<str>;
 
     /// Get the object's type string.
     fn type_of(&self) -> &'static str;
@@ -531,40 +582,32 @@ pub trait TObject<'gc>: 'gc + Collect + Debug + Into<Object<'gc>> + Clone + Copy
         false
     }
 
-    /// Get the length of this object, as if it were an array.
-    fn length(&self) -> usize;
-
-    /// Gets a copy of the array storage behind this object.
-    fn array(&self) -> Vec<Value<'gc>>;
+    /// Gets the length of this object, as if it were an array.
+    fn length(&self, activation: &mut Activation<'_, 'gc, '_>) -> Result<i32, Error<'gc>>;
 
     /// Sets the length of this object, as if it were an array.
-    ///
-    /// Increasing this value will fill the gap with Value::Undefined.
-    /// Decreasing this value will remove affected items from both the array and properties storage.
-    fn set_length(&self, gc_context: MutationContext<'gc, '_>, length: usize);
-
-    /// Gets a property of this object as if it were an array.
-    ///
-    /// Array element lookups do not respect the prototype chain, and will ignore virtual properties.
-    fn array_element(&self, index: usize) -> Value<'gc>;
-
-    /// Sets a property of this object as if it were an array.
-    ///
-    /// This will increase the "length" of this object to encompass the index, and return the new length.
-    /// Any gap created by increasing the length will be filled with Value::Undefined, both in array
-    /// and property storage.
-    fn set_array_element(
+    fn set_length(
         &self,
-        index: usize,
+        activation: &mut Activation<'_, 'gc, '_>,
+        length: i32,
+    ) -> Result<(), Error<'gc>>;
+
+    /// Checks if this object has an element.
+    fn has_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool;
+
+    /// Gets a property of this object, as if it were an array.
+    fn get_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> Value<'gc>;
+
+    /// Sets a property of this object, as if it were an array.
+    fn set_element(
+        &self,
+        activation: &mut Activation<'_, 'gc, '_>,
+        index: i32,
         value: Value<'gc>,
-        gc_context: MutationContext<'gc, '_>,
-    ) -> usize;
+    ) -> Result<(), Error<'gc>>;
 
     /// Deletes a property of this object as if it were an array.
-    ///
-    /// This will not rearrange the array or adjust the length, nor will it affect the properties
-    /// storage.
-    fn delete_array_element(&self, index: usize, gc_context: MutationContext<'gc, '_>);
+    fn delete_element(&self, activation: &mut Activation<'_, 'gc, '_>, index: i32) -> bool;
 }
 
 pub enum ObjectPtr {}
@@ -596,8 +639,8 @@ pub fn search_prototype<'gc>(
             return Err(Error::PrototypeRecursionLimit);
         }
 
-        if p.has_own_property(activation, name) {
-            return Ok((p.get_local(name, activation, this)?, Some(p)));
+        if let Some(value) = p.get_local(name, activation, this) {
+            return Ok((value?, Some(p)));
         }
 
         proto = p.proto();

@@ -47,7 +47,6 @@ pub fn instance_init<'gc>(
                 this.init_display_object(activation.context.gc_context, child);
                 child.set_object2(activation.context.gc_context, this);
 
-                child.construct_frame(&mut activation.context);
                 child.post_instantiation(
                     &mut activation.context,
                     child,
@@ -55,6 +54,7 @@ pub fn instance_init<'gc>(
                     Instantiator::Avm2,
                     false,
                 );
+                child.construct_frame(&mut activation.context);
             }
         }
     }
@@ -403,7 +403,7 @@ pub fn root<'gc>(
 ) -> Result<Value<'gc>, Error> {
     if let Some(dobj) = this.and_then(|this| this.as_display_object()) {
         return Ok(dobj
-            .root(&activation.context)
+            .avm2_root(&mut activation.context)
             .map(|root| root.object2())
             .unwrap_or(Value::Null));
     }
@@ -414,10 +414,17 @@ pub fn root<'gc>(
 /// Implements `stage`.
 pub fn stage<'gc>(
     activation: &mut Activation<'_, 'gc, '_>,
-    _this: Option<Object<'gc>>,
+    this: Option<Object<'gc>>,
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error> {
-    Ok(activation.context.stage.object2())
+    if let Some(dobj) = this.and_then(|this| this.as_display_object()) {
+        return Ok(dobj
+            .avm2_stage(&activation.context)
+            .map(|stage| stage.object2())
+            .unwrap_or(Value::Null));
+    }
+
+    Ok(Value::Undefined)
 }
 
 /// Implements `visible`'s getter.
@@ -551,7 +558,7 @@ pub fn loader_info<'gc>(
     _args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error> {
     if let Some(dobj) = this.and_then(|this| this.as_display_object()) {
-        if let Some(root) = dobj.root(&activation.context) {
+        if let Some(root) = dobj.avm2_root(&mut activation.context) {
             if DisplayObject::ptr_eq(root, dobj) {
                 let movie = dobj.movie();
 

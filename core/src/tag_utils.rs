@@ -1,8 +1,9 @@
 use crate::backend::navigator::url_from_relative_path;
+use crate::vminterface::AvmType;
 use gc_arena::Collect;
 use std::path::Path;
 use std::sync::Arc;
-use swf::{Header, TagCode};
+use swf::{Fixed8, HeaderExt, Rectangle, TagCode, Twips};
 
 pub type Error = Box<dyn std::error::Error>;
 pub type DecodeResult = Result<(), Error>;
@@ -14,7 +15,7 @@ pub type SwfStream<'a> = swf::read::Reader<'a>;
 #[collect(require_static)]
 pub struct SwfMovie {
     /// The SWF header parsed from the data stream.
-    header: Header,
+    header: HeaderExt,
 
     /// Uncompressed SWF data.
     data: Vec<u8>,
@@ -33,27 +34,20 @@ pub struct SwfMovie {
     encoding: &'static swf::Encoding,
 
     /// The compressed length of the entire datastream
-    compressed_length: usize,
+    compressed_len: usize,
 }
 
 impl SwfMovie {
     /// Construct an empty movie.
     pub fn empty(swf_version: u8) -> Self {
         Self {
-            header: Header {
-                compression: swf::Compression::None,
-                version: swf_version,
-                uncompressed_length: 0,
-                stage_size: swf::Rectangle::default(),
-                frame_rate: 1.0,
-                num_frames: 0,
-            },
+            header: HeaderExt::default_with_swf_version(swf_version),
             data: vec![],
             url: None,
             loader_url: None,
             parameters: Vec::new(),
             encoding: swf::UTF_8,
-            compressed_length: 0,
+            compressed_len: 0,
         }
     }
 
@@ -70,7 +64,7 @@ impl SwfMovie {
             loader_url: source.loader_url.clone(),
             parameters: source.parameters.clone(),
             encoding: source.encoding,
-            compressed_length: source.compressed_length,
+            compressed_len: source.compressed_len,
         }
     }
 
@@ -92,9 +86,9 @@ impl SwfMovie {
         url: Option<String>,
         loader_url: Option<String>,
     ) -> Result<Self, Error> {
-        let compressed_length = swf_data.len();
+        let compressed_len = swf_data.len();
         let swf_buf = swf::read::decompress_swf(swf_data)?;
-        let encoding = swf::SwfStr::encoding_for_version(swf_buf.header.version);
+        let encoding = swf::SwfStr::encoding_for_version(swf_buf.header.version());
         Ok(Self {
             header: swf_buf.header,
             data: swf_buf.data,
@@ -102,17 +96,17 @@ impl SwfMovie {
             loader_url,
             parameters: Vec::new(),
             encoding,
-            compressed_length,
+            compressed_len,
         })
     }
 
-    pub fn header(&self) -> &Header {
+    pub fn header(&self) -> &HeaderExt {
         &self.header
     }
 
     /// Get the version of the SWF.
     pub fn version(&self) -> u8 {
-        self.header.version
+        self.header.version()
     }
 
     pub fn data(&self) -> &[u8] {
@@ -127,12 +121,14 @@ impl SwfMovie {
         self.encoding
     }
 
-    pub fn width(&self) -> u32 {
-        (self.header.stage_size.x_max - self.header.stage_size.x_min).to_pixels() as u32
+    /// The width of the movie in twips.
+    pub fn width(&self) -> Twips {
+        self.header.stage_size().x_max - self.header.stage_size().x_min
     }
 
-    pub fn height(&self) -> u32 {
-        (self.header.stage_size.y_max - self.header.stage_size.y_min).to_pixels() as u32
+    /// The height of the movie in twips.
+    pub fn height(&self) -> Twips {
+        self.header.stage_size().y_max - self.header.stage_size().y_min
     }
 
     /// Get the URL this SWF was fetched from.
@@ -153,8 +149,32 @@ impl SwfMovie {
         self.parameters.extend(params);
     }
 
-    pub fn compressed_length(&self) -> usize {
-        self.compressed_length
+    pub fn compressed_len(&self) -> usize {
+        self.compressed_len
+    }
+
+    pub fn uncompressed_len(&self) -> u32 {
+        self.header.uncompressed_len()
+    }
+
+    pub fn avm_type(&self) -> AvmType {
+        if self.header.is_action_script_3() {
+            AvmType::Avm2
+        } else {
+            AvmType::Avm1
+        }
+    }
+
+    pub fn stage_size(&self) -> &Rectangle {
+        self.header.stage_size()
+    }
+
+    pub fn num_frames(&self) -> u16 {
+        self.header.num_frames()
+    }
+
+    pub fn frame_rate(&self) -> Fixed8 {
+        self.header.frame_rate()
     }
 }
 
@@ -283,7 +303,7 @@ impl SwfSlice {
         let new_end = self.start + end;
 
         if new_start <= new_end {
-            self.to_subslice(&self.movie.data().get(new_start..new_end)?)
+            self.to_subslice(self.movie.data().get(new_start..new_end)?)
         } else {
             None
         }
@@ -296,7 +316,7 @@ impl SwfSlice {
 
     /// Get the version of the SWF this data comes from.
     pub fn version(&self) -> u8 {
-        self.movie.header().version
+        self.movie.header().version()
     }
 
     /// Construct a reader for this slice.

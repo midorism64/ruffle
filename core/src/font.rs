@@ -237,7 +237,7 @@ impl<'gc> Font<'gc> {
         transform.matrix.d = scale;
         let mut char_indices = text.char_indices().peekable();
         let has_kerning_info = self.has_kerning_info();
-        let mut x = Twips::zero();
+        let mut x = Twips::ZERO;
         while let Some((pos, c)) = char_indices.next() {
             if let Some(glyph) = self.get_glyph_for_char(c) {
                 let mut advance = Twips::new(glyph.advance);
@@ -248,7 +248,7 @@ impl<'gc> Font<'gc> {
                 let twips_advance =
                     Twips::new((advance.get() as f32 * scale) as i32) + params.letter_spacing;
 
-                glyph_func(pos, &transform, &glyph, twips_advance, x);
+                glyph_func(pos, &transform, glyph, twips_advance, x);
 
                 // Step horizontally.
                 transform.matrix.tx += twips_advance;
@@ -262,7 +262,7 @@ impl<'gc> Font<'gc> {
     /// The `round` flag causes the returned coordinates to be rounded down to
     /// the nearest pixel.
     pub fn measure(&self, text: &str, params: EvalParameters, round: bool) -> (Twips, Twips) {
-        let mut size = (Twips::zero(), Twips::zero());
+        let mut size = (Twips::ZERO, Twips::ZERO);
 
         self.evaluate(
             text,
@@ -329,7 +329,7 @@ impl<'gc> Font<'gc> {
 
             if is_start_of_line && measure.0 > remaining_width {
                 //Failsafe for if we get a word wider than the field.
-                let mut last_passing_breakpoint = (Twips::zero(), Twips::zero());
+                let mut last_passing_breakpoint = (Twips::ZERO, Twips::ZERO);
 
                 let cur_slice = &text[word_start..];
                 let mut char_iter = cur_slice.char_indices();
@@ -514,7 +514,7 @@ mod tests {
                 EvalParameters::from_parts(Twips::from_pixels(12.0), Twips::from_pixels(0.0), true);
             let string = "abcdefghijklmnopqrstuv";
             let breakpoint = df.wrap_line(
-                &string,
+                string,
                 params,
                 Twips::from_pixels(200.0),
                 Twips::from_pixels(0.0),
@@ -533,7 +533,7 @@ mod tests {
             let string = "abcd efgh ijkl mnop";
             let mut last_bp = 0;
             let breakpoint = df.wrap_line(
-                &string,
+                string,
                 params,
                 Twips::from_pixels(35.0),
                 Twips::from_pixels(0.0),
@@ -587,7 +587,7 @@ mod tests {
                 EvalParameters::from_parts(Twips::from_pixels(12.0), Twips::from_pixels(0.0), true);
             let string = "abcd efgh ijkl mnop";
             let breakpoint = df.wrap_line(
-                &string,
+                string,
                 params,
                 Twips::from_pixels(30.0),
                 Twips::from_pixels(29.0),
@@ -606,7 +606,7 @@ mod tests {
             let string = "abcdi j kl mnop q rstuv";
             let mut last_bp = 0;
             let breakpoint = df.wrap_line(
-                &string,
+                string,
                 params,
                 Twips::from_pixels(37.0),
                 Twips::from_pixels(0.0),

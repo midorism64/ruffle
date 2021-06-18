@@ -97,6 +97,7 @@ swf_tests! {
     (execution_order1, "avm1/execution_order1", 3),
     (execution_order2, "avm1/execution_order2", 15),
     (execution_order3, "avm1/execution_order3", 5),
+    (execution_order4, "avm1/execution_order4", 4),
     (export_assets, "avm1/export_assets", 1),
     (single_frame, "avm1/single_frame", 2),
     (looping, "avm1/looping", 6),
@@ -182,8 +183,8 @@ swf_tests! {
     (slash_syntax, "avm1/slash_syntax", 2),
     (strictequals_swf6, "avm1/strictequals_swf6", 1),
     (string_methods, "avm1/string_methods", 1),
+    (string_methods_negative_args, "avm1/string_methods_negative_args", 1),
     (string_ops_swf6, "avm1/string_ops_swf6", 1),
-    (substr_negative, "avm1/substr_negative", 1),
     (path_string, "avm1/path_string", 1),
     (global_is_bare, "avm1/global_is_bare", 1),
     (primitive_type_globals, "avm1/primitive_type_globals", 1),
@@ -217,6 +218,7 @@ swf_tests! {
     (xml_cdata, "avm1/xml_cdata", 1),
     (funky_function_calls, "avm1/funky_function_calls", 1),
     (undefined_to_string_swf6, "avm1/undefined_to_string_swf6", 1),
+    (define_function_case_sensitive, "avm1/define_function_case_sensitive", 2),
     (define_function2_preload, "avm1/define_function2_preload", 1),
     (define_function2_preload_order, "avm1/define_function2_preload_order", 1),
     (mcl_as_broadcaster, "avm1/mcl_as_broadcaster", 1),
@@ -263,6 +265,7 @@ swf_tests! {
     (issue_1671, "avm1/issue_1671", 1),
     (issue_1906, "avm1/issue_1906", 2),
     (issue_2030, "avm1/issue_2030", 1),
+    (issue_2084, "avm1/issue_2084", 2),
     (issue_2166, "avm1/issue_2166", 1),
     (issue_2870, "avm1/issue_2870", 10),
     (issue_3169, "avm1/issue_3169", 1),
@@ -306,6 +309,7 @@ swf_tests! {
     (glow_filter, "avm1/glow_filter", 1),
     (date_constructor, "avm1/date/constructor", 1),
     (removed_clip_halts_script, "avm1/removed_clip_halts_script", 13),
+    (target_clip_removed, "avm1/target_clip_removed", 1),
     (date_utc, "avm1/date/UTC", 1),
     (date_set_date, "avm1/date/setDate", 1),
     (date_set_full_year, "avm1/date/setFullYear", 1),
@@ -359,6 +363,7 @@ swf_tests! {
     (as3_control_flow_bool, "avm2/control_flow_bool", 1),
     (as3_control_flow_stricteq, "avm2/control_flow_stricteq", 1),
     (as3_object_enumeration, "avm2/object_enumeration", 1),
+    (as3_object_prototype, "avm2/object_prototype", 1),
     (as3_class_enumeration, "avm2/class_enumeration", 1),
     (as3_is_prototype_of, "avm2/is_prototype_of", 1),
     (as3_has_own_property, "avm2/has_own_property", 1),
@@ -500,7 +505,7 @@ swf_tests! {
     (as3_displayobjectcontainer_setchildindex, "avm2/displayobjectcontainer_setchildindex", 1),
     (as3_displayobjectcontainer_swapchildren, "avm2/displayobjectcontainer_swapchildren", 1),
     (as3_displayobjectcontainer_swapchildrenat, "avm2/displayobjectcontainer_swapchildrenat", 1),
-    (button_order, "avm1/button_order", 1),
+    (button_order, "avm1/button_order", 2),
     (as3_displayobjectcontainer_stopallmovieclips, "avm2/displayobjectcontainer_stopallmovieclips", 2),
     (as3_displayobjectcontainer_timelineinstance, "avm2/displayobjectcontainer_timelineinstance", 6),
     (as3_displayobject_alpha, "avm2/displayobject_alpha", 1),
@@ -572,6 +577,16 @@ swf_tests! {
     (as3_stage_loaderinfo_properties, "avm2/stage_loaderinfo_properties", 2),
     (as3_stage_properties, "avm2/stage_properties", 1),
     (as3_closures, "avm2/closures", 1),
+    (as3_simplebutton_structure, "avm2/simplebutton_structure", 2),
+    (as3_simplebutton_childevents, "avm2/simplebutton_childevents", 2),
+    (as3_simplebutton_childevents_nested, "avm2/simplebutton_childevents_nested", 2),
+    (as3_simplebutton_constr, "avm2/simplebutton_constr", 2),
+    (as3_simplebutton_constr_childevents, "avm2/simplebutton_constr_childevents", 2),
+    (as3_simplebutton_childprops, "avm2/simplebutton_childprops", 1),
+    (as3_simplebutton_childshuffle, "avm2/simplebutton_childshuffle", 1),
+    (as3_simplebutton_constr_params, "avm2/simplebutton_constr_params", 1),
+    (as3_place_object_replace, "avm2/place_object_replace", 2),
+    (as3_place_object_replace_2, "avm2/place_object_replace_2", 3),
 }
 
 // TODO: These tests have some inaccuracies currently, so we use approx_eq to test that numeric values are close enough.
@@ -872,7 +887,7 @@ fn run_swf(
     let base_path = Path::new(swf_path).parent().unwrap();
     let (mut executor, channel) = NullExecutor::new();
     let movie = SwfMovie::from_path(swf_path, None)?;
-    let frame_time = 1000.0 / movie.header().frame_rate as f64;
+    let frame_time = 1000.0 / movie.frame_rate().to_f64();
     let trace_output = Rc::new(RefCell::new(Vec::new()));
 
     let player = Player::new(

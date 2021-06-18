@@ -1,22 +1,22 @@
+use crate::matrix::Matrix;
 use crate::shape_utils::DistilledShape;
 pub use crate::{library::MovieLibrary, transform::Transform, Color};
 use downcast_rs::Downcast;
 use gc_arena::Collect;
 use std::io::Read;
 pub use swf;
-use swf::Matrix;
 
 pub trait RenderBackend: Downcast {
     fn set_viewport_dimensions(&mut self, width: u32, height: u32);
     fn register_shape(
         &mut self,
         shape: DistilledShape,
-        library: Option<&MovieLibrary<'_>>,
+        bitmap_source: &dyn BitmapSource,
     ) -> ShapeHandle;
     fn replace_shape(
         &mut self,
         shape: DistilledShape,
-        library: Option<&MovieLibrary<'_>>,
+        bitmap_source: &dyn BitmapSource,
         handle: ShapeHandle,
     );
     fn register_glyph_shape(&mut self, shape: &swf::Glyph) -> ShapeHandle;
@@ -80,6 +80,21 @@ pub struct BitmapInfo {
     pub height: u16,
 }
 
+/// An object that returns a bitmap given an ID.
+///
+/// This is used by render backends to get the bitmap used in a bitmap fill.
+/// For movie libraries, this will return the bitmap with the given character ID.
+pub trait BitmapSource {
+    fn bitmap(&self, id: u16) -> Option<BitmapInfo>;
+}
+
+pub struct NullBitmapSource;
+impl BitmapSource for NullBitmapSource {
+    fn bitmap(&self, _id: u16) -> Option<BitmapInfo> {
+        None
+    }
+}
+
 pub struct NullRenderer;
 
 impl NullRenderer {
@@ -99,14 +114,14 @@ impl RenderBackend for NullRenderer {
     fn register_shape(
         &mut self,
         _shape: DistilledShape,
-        _library: Option<&MovieLibrary<'_>>,
+        _bitmap_source: &dyn BitmapSource,
     ) -> ShapeHandle {
         ShapeHandle(0)
     }
     fn replace_shape(
         &mut self,
         _shape: DistilledShape,
-        _library: Option<&MovieLibrary<'_>>,
+        _bitmap_source: &dyn BitmapSource,
         _handle: ShapeHandle,
     ) {
     }
@@ -440,12 +455,12 @@ pub fn decode_define_bits_lossless(
             }
             decoded_data
         }
-        (1, swf::BitmapFormat::ColorMap8) => {
+        (1, swf::BitmapFormat::ColorMap8 { num_colors }) => {
             let mut i = 0;
             let padded_width = (swf_tag.width + 0b11) & !0b11;
 
-            let mut palette = Vec::with_capacity(swf_tag.num_colors as usize + 1);
-            for _ in 0..=swf_tag.num_colors {
+            let mut palette = Vec::with_capacity(num_colors as usize + 1);
+            for _ in 0..=num_colors {
                 palette.push(Color {
                     r: decoded_data[i],
                     g: decoded_data[i + 1],
@@ -454,7 +469,8 @@ pub fn decode_define_bits_lossless(
                 });
                 i += 3;
             }
-            let mut out_data = vec![];
+            let mut out_data: Vec<u8> =
+                Vec::with_capacity(swf_tag.width as usize * swf_tag.height as usize * 4);
             for _ in 0..swf_tag.height {
                 for _ in 0..swf_tag.width {
                     let entry = decoded_data[i] as usize;
@@ -476,12 +492,12 @@ pub fn decode_define_bits_lossless(
             }
             out_data
         }
-        (2, swf::BitmapFormat::ColorMap8) => {
+        (2, swf::BitmapFormat::ColorMap8 { num_colors }) => {
             let mut i = 0;
             let padded_width = (swf_tag.width + 0b11) & !0b11;
 
-            let mut palette = Vec::with_capacity(swf_tag.num_colors as usize + 1);
-            for _ in 0..=swf_tag.num_colors {
+            let mut palette = Vec::with_capacity(num_colors as usize + 1);
+            for _ in 0..=num_colors {
                 palette.push(Color {
                     r: decoded_data[i],
                     g: decoded_data[i + 1],
@@ -490,7 +506,8 @@ pub fn decode_define_bits_lossless(
                 });
                 i += 4;
             }
-            let mut out_data = vec![];
+            let mut out_data: Vec<u8> =
+                Vec::with_capacity(swf_tag.width as usize * swf_tag.height as usize * 4);
             for _ in 0..swf_tag.height {
                 for _ in 0..swf_tag.width {
                     let entry = decoded_data[i] as usize;

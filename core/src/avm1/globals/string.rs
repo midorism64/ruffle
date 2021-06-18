@@ -5,9 +5,30 @@ use crate::avm1::error::Error;
 use crate::avm1::function::{Executable, FunctionObject};
 use crate::avm1::object::value_object::ValueObject;
 use crate::avm1::property::Attribute;
+use crate::avm1::property_decl::{define_properties_on, Declaration};
 use crate::avm1::{AvmString, Object, ScriptObject, TObject, Value};
 use crate::string_utils;
 use gc_arena::MutationContext;
+
+const PROTO_DECLS: &[Declaration] = declare_properties! {
+    "toString" => method(to_string_value_of);
+    "valueOf" => method(to_string_value_of);
+    "charAt" => method(char_at; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "charCodeAt" => method(char_code_at; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "concat" => method(concat; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "indexOf" => method(index_of; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "lastIndexOf" => method(last_index_of; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "slice" => method(slice; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "split" => method(split; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "substr" => method(substr; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "substring" => method(substring; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "toLowerCase" => method(to_lower_case; DONT_DELETE | DONT_ENUM | READ_ONLY);
+    "toUpperCase" => method(to_upper_case; DONT_DELETE | DONT_ENUM | READ_ONLY);
+};
+
+const OBJECT_DECLS: &[Declaration] = declare_properties! {
+    "fromCharCode" => method(from_char_code; DONT_DELETE | DONT_ENUM | READ_ONLY);
+};
 
 /// `String` constructor
 pub fn string<'gc>(
@@ -23,7 +44,12 @@ pub fn string<'gc>(
 
     if let Some(mut vbox) = this.as_value_object() {
         let len = value.encode_utf16().count();
-        vbox.set_length(activation.context.gc_context, len);
+        vbox.define_value(
+            activation.context.gc_context,
+            "length",
+            len.into(),
+            Attribute::empty(),
+        );
         vbox.replace_value(activation.context.gc_context, value.into());
     }
 
@@ -48,25 +74,17 @@ pub fn string_function<'gc>(
 pub fn create_string_object<'gc>(
     gc_context: MutationContext<'gc, '_>,
     string_proto: Object<'gc>,
-    fn_proto: Option<Object<'gc>>,
+    fn_proto: Object<'gc>,
 ) -> Object<'gc> {
     let string = FunctionObject::constructor(
         gc_context,
         Executable::Native(string),
         Executable::Native(string_function),
-        fn_proto,
+        Some(fn_proto),
         string_proto,
     );
-    let mut object = string.as_script_object().unwrap();
-
-    object.force_set_function(
-        "fromCharCode",
-        from_char_code,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        fn_proto,
-    );
-
+    let object = string.as_script_object().unwrap();
+    define_properties_on(OBJECT_DECLS, gc_context, object, fn_proto);
     string
 }
 
@@ -77,109 +95,8 @@ pub fn create_proto<'gc>(
     fn_proto: Object<'gc>,
 ) -> Object<'gc> {
     let string_proto = ValueObject::empty_box(gc_context, Some(proto));
-    let mut object = string_proto.as_script_object().unwrap();
-
-    object.force_set_function(
-        "toString",
-        to_string_value_of,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-    object.force_set_function(
-        "valueOf",
-        to_string_value_of,
-        gc_context,
-        Attribute::empty(),
-        Some(fn_proto),
-    );
-    object.force_set_function(
-        "charAt",
-        char_at,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-    object.force_set_function(
-        "charCodeAt",
-        char_code_at,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "concat",
-        concat,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "indexOf",
-        index_of,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "lastIndexOf",
-        last_index_of,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "slice",
-        slice,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "split",
-        split,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "substr",
-        substr,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "substring",
-        substring,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "toLowerCase",
-        to_lower_case,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
-    object.force_set_function(
-        "toUpperCase",
-        to_upper_case,
-        gc_context,
-        Attribute::DONT_DELETE | Attribute::READ_ONLY | Attribute::DONT_ENUM,
-        Some(fn_proto),
-    );
-
+    let object = string_proto.as_script_object().unwrap();
+    define_properties_on(PROTO_DECLS, gc_context, object, fn_proto);
     string_proto
 }
 
@@ -401,22 +318,26 @@ fn split<'gc>(
     );
     if !delimiter.is_empty() {
         for (i, token) in this.split(delimiter.as_ref()).take(limit).enumerate() {
-            array.set_array_element(
-                i,
-                AvmString::new(activation.context.gc_context, token.to_string()).into(),
-                activation.context.gc_context,
-            );
+            array
+                .set_element(
+                    activation,
+                    i as i32,
+                    AvmString::new(activation.context.gc_context, token.to_string()).into(),
+                )
+                .unwrap();
         }
     } else {
         // When using an empty "" delimiter, Rust's str::split adds an extra beginning and trailing item, but Flash does not.
         // e.g., split("foo", "") returns ["", "f", "o", "o", ""] in Rust but ["f, "o", "o"] in Flash.
         // Special case this to match Flash's behavior.
         for (i, token) in this.chars().take(limit).enumerate() {
-            array.set_array_element(
-                i,
-                AvmString::new(activation.context.gc_context, token.to_string()).into(),
-                activation.context.gc_context,
-            );
+            array
+                .set_element(
+                    activation,
+                    i as i32,
+                    AvmString::new(activation.context.gc_context, token.to_string()).into(),
+                )
+                .unwrap();
         }
     }
     Ok(array.into())
@@ -434,13 +355,19 @@ fn substr<'gc>(
     let this_val = Value::from(this);
     let this = this_val.coerce_to_string(activation)?;
     let this_len = this.encode_utf16().count();
-    let start_index_raw = args.get(0).unwrap().coerce_to_i32(activation)?;
-    let start_index = string_wrapping_index(start_index_raw, this_len);
+    let start_index = string_wrapping_index(
+        args.get(0)
+            .unwrap_or(&Value::Undefined)
+            .coerce_to_i32(activation)?,
+        this_len,
+    );
 
     let len = match args.get(1) {
-        None | Some(Value::Undefined) => this_len,
-        Some(n) => string_index_substr(start_index_raw, n.coerce_to_i32(activation)?, this_len),
+        None | Some(Value::Undefined) => this_len as i32,
+        Some(n) => n.coerce_to_i32(activation)?,
     };
+    let end_index = string_wrapping_index((start_index as i32) + len, this_len);
+    let len = end_index.saturating_sub(start_index);
 
     let ret = string_utils::utf16_iter_to_string(this.encode_utf16().skip(start_index).take(len));
     Ok(AvmString::new(activation.context.gc_context, ret).into())
@@ -530,15 +457,10 @@ fn to_upper_case<'gc>(
 /// Normalizes an  index parameter used in `String` functions such as `substring`.
 /// The returned index will be within the range of `[0, len]`.
 fn string_index(i: i32, len: usize) -> usize {
-    if i > 0 {
-        let i = i as usize;
-        if i < len {
-            i
-        } else {
-            len
-        }
-    } else {
+    if i < 0 {
         0
+    } else {
+        (i as usize).min(len)
     }
 }
 
@@ -546,41 +468,10 @@ fn string_index(i: i32, len: usize) -> usize {
 /// Negative values will count backwards from `len`.
 /// The returned index will be within the range of `[0, len]`.
 fn string_wrapping_index(i: i32, len: usize) -> usize {
-    if i >= 0 {
-        let i = i as usize;
-        if i < len {
-            i
-        } else {
-            len
-        }
+    if i < 0 {
+        let offset = i as isize;
+        len.saturating_sub((-offset) as usize)
     } else {
-        let i = (-i) as usize;
-        if i <= len {
-            len - i
-        } else {
-            len
-        }
-    }
-}
-
-/// Normalizes an index parameter used in substr.
-/// If start + length is not less than zero, the parameter is zero,
-/// otherwise negative values will count backwards from `len`.
-/// The returned index will be within the range of `[0, len]`.
-fn string_index_substr(s: i32, e: i32, len: usize) -> usize {
-    if e >= 0 {
-        string_index(e, len)
-    } else {
-        let t = s + e;
-        if t >= 0 {
-            0
-        } else {
-            let e = (-e) as usize;
-            if e <= len {
-                len - e
-            } else {
-                len
-            }
-        }
+        (i as usize).min(len)
     }
 }

@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use ruffle_core::backend::render::{
-    Bitmap, BitmapFormat, BitmapHandle, BitmapInfo, Color, MovieLibrary, RenderBackend,
-    ShapeHandle, Transform,
+    Bitmap, BitmapFormat, BitmapHandle, BitmapInfo, BitmapSource, Color, NullBitmapSource,
+    RenderBackend, ShapeHandle, Transform,
 };
 use ruffle_core::shape_utils::DistilledShape;
 use ruffle_core::swf;
@@ -476,23 +476,15 @@ impl WebGlRenderBackend {
     fn register_shape_internal(
         &mut self,
         shape: DistilledShape,
-        library: Option<&MovieLibrary<'_>>,
+        bitmap_source: &dyn BitmapSource,
     ) -> Mesh {
         use ruffle_render_common_tess::DrawType as TessDrawType;
 
-        let textures = &self.textures;
-        let lyon_mesh = self.shape_tessellator.tessellate_shape(shape, |id| {
-            library
-                .and_then(|lib| lib.get_bitmap(id))
-                .and_then(|bitmap| {
-                    let handle = bitmap.bitmap_handle();
-                    textures.get(handle.0).map(|texture| (texture, handle))
-                })
-                .map(|(texture, handle)| (texture.width, texture.height, handle))
-        });
+        let lyon_mesh = self
+            .shape_tessellator
+            .tessellate_shape(shape, bitmap_source);
 
         let mut draws = Vec::with_capacity(lyon_mesh.len());
-
         for draw in lyon_mesh {
             let num_indices = draw.indices.len() as i32;
 
@@ -741,10 +733,10 @@ impl RenderBackend for WebGlRenderBackend {
     fn register_shape(
         &mut self,
         shape: DistilledShape,
-        library: Option<&MovieLibrary<'_>>,
+        bitmap_source: &dyn BitmapSource,
     ) -> ShapeHandle {
         let handle = ShapeHandle(self.meshes.len());
-        let mesh = self.register_shape_internal(shape, library);
+        let mesh = self.register_shape_internal(shape, bitmap_source);
         self.meshes.push(mesh);
         handle
     }
@@ -752,17 +744,17 @@ impl RenderBackend for WebGlRenderBackend {
     fn replace_shape(
         &mut self,
         shape: DistilledShape,
-        library: Option<&MovieLibrary<'_>>,
+        bitmap_source: &dyn BitmapSource,
         handle: ShapeHandle,
     ) {
-        let mesh = self.register_shape_internal(shape, library);
+        let mesh = self.register_shape_internal(shape, bitmap_source);
         self.meshes[handle.0] = mesh;
     }
 
     fn register_glyph_shape(&mut self, glyph: &swf::Glyph) -> ShapeHandle {
         let shape = ruffle_core::shape_utils::swf_glyph_to_shape(glyph);
         let handle = ShapeHandle(self.meshes.len());
-        let mesh = self.register_shape_internal((&shape).into(), None);
+        let mesh = self.register_shape_internal((&shape).into(), &NullBitmapSource);
         self.meshes.push(mesh);
         handle
     }
@@ -933,7 +925,7 @@ impl RenderBackend for WebGlRenderBackend {
 
             // Scale the quad to the bitmap's dimensions.
             let matrix = transform.matrix
-                * swf::Matrix {
+                * ruffle_core::matrix::Matrix {
                     a: width,
                     d: height,
                     ..Default::default()
@@ -987,11 +979,11 @@ impl RenderBackend for WebGlRenderBackend {
                 self.add_color = Some(add_color);
             }
 
-            program.uniform_matrix3fv(&self.gl, ShaderUniform::TextureMatrix, &bitmap_matrix);
+            program.uniform_matrix3fv(&self.gl, ShaderUniform::TextureMatrix, bitmap_matrix);
 
             // Bind texture.
             self.gl.active_texture(Gl::TEXTURE0);
-            self.gl.bind_texture(Gl::TEXTURE_2D, Some(&texture));
+            self.gl.bind_texture(Gl::TEXTURE_2D, Some(texture));
             program.uniform1i(&self.gl, ShaderUniform::BitmapTexture, 0);
 
             // Set texture parameters.
@@ -1096,7 +1088,7 @@ impl RenderBackend for WebGlRenderBackend {
                     program.uniform4fv(
                         &self.gl,
                         ShaderUniform::GradientColors,
-                        &bytemuck::cast_slice(&gradient.colors),
+                        bytemuck::cast_slice(&gradient.colors),
                     );
                     program.uniform1i(
                         &self.gl,
@@ -1167,7 +1159,7 @@ impl RenderBackend for WebGlRenderBackend {
         }
     }
 
-    fn draw_rect(&mut self, color: Color, matrix: &swf::Matrix) {
+    fn draw_rect(&mut self, color: Color, matrix: &ruffle_core::matrix::Matrix) {
         let world_matrix = [
             [matrix.a, matrix.b, 0.0, 0.0],
             [matrix.c, matrix.d, 0.0, 0.0],
@@ -1365,7 +1357,7 @@ impl From<TessGradient> for Gradient {
                 swf::GradientSpread::Repeat => 1,
                 swf::GradientSpread::Reflect => 2,
             },
-            focal_point: gradient.focal_point,
+            focal_point: gradient.focal_point.to_f32(),
             interpolation: gradient.interpolation,
         }
     }
@@ -1458,8 +1450,8 @@ impl ShaderProgram {
         fragment_shader: &WebGlShader,
     ) -> Result<Self, Error> {
         let program = gl.create_program().ok_or("Unable to create program")?;
-        gl.attach_shader(&program, &vertex_shader);
-        gl.attach_shader(&program, &fragment_shader);
+        gl.attach_shader(&program, vertex_shader);
+        gl.attach_shader(&program, fragment_shader);
 
         gl.link_program(&program);
         if !gl

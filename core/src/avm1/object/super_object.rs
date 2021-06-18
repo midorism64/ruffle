@@ -83,15 +83,17 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
         _name: &str,
         _activation: &mut Activation<'_, 'gc, '_>,
         _this: Object<'gc>,
-    ) -> Result<Value<'gc>, Error<'gc>> {
-        Ok(Value::Undefined)
+    ) -> Option<Result<Value<'gc>, Error<'gc>>> {
+        Some(Ok(Value::Undefined))
     }
 
-    fn set(
+    fn set_local(
         &self,
         _name: &str,
         _value: Value<'gc>,
         _activation: &mut Activation<'_, 'gc, '_>,
+        _this: Object<'gc>,
+        _base_proto: Option<Object<'gc>>,
     ) -> Result<(), Error<'gc>> {
         //TODO: What happens if you set `super.__proto__`?
         Ok(())
@@ -203,7 +205,6 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
     fn add_property_with_case(
         &self,
         _activation: &mut Activation<'_, 'gc, '_>,
-        _gc_context: MutationContext<'gc, '_>,
         _name: &str,
         _get: Object<'gc>,
         _set: Option<Object<'gc>>,
@@ -215,7 +216,6 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
     fn set_watcher(
         &self,
         _activation: &mut Activation<'_, 'gc, '_>,
-        _gc_context: MutationContext<'gc, '_>,
         _name: Cow<str>,
         _callback: Object<'gc>,
         _user_data: Value<'gc>,
@@ -223,12 +223,7 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
         //`super` cannot have properties defined on it
     }
 
-    fn remove_watcher(
-        &self,
-        _activation: &mut Activation<'_, 'gc, '_>,
-        _gc_context: MutationContext<'gc, '_>,
-        _name: Cow<str>,
-    ) -> bool {
+    fn remove_watcher(&self, _activation: &mut Activation<'_, 'gc, '_>, _name: Cow<str>) -> bool {
         //`super` cannot have properties defined on it
         false
     }
@@ -253,38 +248,42 @@ impl<'gc> TObject<'gc> for SuperObject<'gc> {
         vec![]
     }
 
-    fn as_string(&self) -> Cow<str> {
-        Cow::Owned(self.0.read().child.as_string().into_owned())
-    }
-
     fn type_of(&self) -> &'static str {
         TYPE_OF_OBJECT
     }
 
-    fn length(&self) -> usize {
-        0
+    fn length(&self, _activation: &mut Activation<'_, 'gc, '_>) -> Result<i32, Error<'gc>> {
+        Ok(0)
     }
 
-    fn set_length(&self, _gc_context: MutationContext<'gc, '_>, _new_length: usize) {}
-
-    fn array(&self) -> Vec<Value<'gc>> {
-        vec![]
+    fn set_length(
+        &self,
+        _activation: &mut Activation<'_, 'gc, '_>,
+        _length: i32,
+    ) -> Result<(), Error<'gc>> {
+        Ok(())
     }
 
-    fn array_element(&self, _index: usize) -> Value<'gc> {
+    fn has_element(&self, _activation: &mut Activation<'_, 'gc, '_>, _index: i32) -> bool {
+        false
+    }
+
+    fn get_element(&self, _activation: &mut Activation<'_, 'gc, '_>, _index: i32) -> Value<'gc> {
         Value::Undefined
     }
 
-    fn set_array_element(
+    fn set_element(
         &self,
-        _index: usize,
+        _activation: &mut Activation<'_, 'gc, '_>,
+        _index: i32,
         _value: Value<'gc>,
-        _gc_context: MutationContext<'gc, '_>,
-    ) -> usize {
-        0
+    ) -> Result<(), Error<'gc>> {
+        Ok(())
     }
 
-    fn delete_array_element(&self, _index: usize, _gc_context: MutationContext<'gc, '_>) {}
+    fn delete_element(&self, _activation: &mut Activation<'_, 'gc, '_>, _index: i32) -> bool {
+        false
+    }
 
     fn interfaces(&self) -> Vec<Object<'gc>> {
         //`super` does not implement interfaces
